@@ -1,0 +1,28 @@
+# Container images
+*.sif
+*.simg
+
+# Nextflow runtime
+.nextflow/
+.nextflow.log*
+work/
+
+# Results
+results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# R
+.Rhistory
+.RData
+
+# Temporary
+*.tmp
+*.swp
+*~

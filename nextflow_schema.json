@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oumarkme/nf-ontmeth/blob/main/nextflow_schema.json",
+  "title": "nf-ontmeth pipeline parameters",
+  "description": "ONT Methylation Analysis Pipeline — DMR detection from Oxford Nanopore WGS",
+  "type": "object",
+  "$defs": {
+    "input_output": {
+      "title": "Input/Output",
+      "type": "object",
+      "description": "Required input files and output directory.",
+      "required": ["input"],
+      "properties": {
+        "input": {
+          "type": "string",
+          "format": "file-path",
+          "pattern": "^\\S+\\.csv$",
+          "description": "Samplesheet CSV with columns: sample_id, type, meth_bed, vcf"
+        },
+        "outdir": {
+          "type": "string",
+          "format": "directory-path",
+          "default": "./results",
+          "description": "Output directory for results."
+        },
+        "gtf": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Ensembl GTF annotation file (gzipped). Auto-downloaded from Ensembl if not provided."
+        }
+      }
+    },
+    "precomputed_references": {
+      "title": "Pre-computed References",
+      "type": "object",
+      "description": "Skip Stages 1-2 by providing pre-built references.",
+      "properties": {
+        "ref_atlas": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Pre-built reference atlas (tsv.gz). Skips Stage 1."
+        },
+        "cpg_panel": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Pre-built CpG panel (bed). Skips Stage 2."
+        }
+      }
+    },
+    "optional_panel": {
+      "title": "Optional Second Panel",
+      "type": "object",
+      "description": "Optional BED file for a second panel analysis.",
+      "properties": {
+        "panel2": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Headerless 3-column BED file (CHROM, START, END)."
+        },
+        "panel2_diff_threshold": {
+          "type": "number",
+          "default": 0.25,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "|DIFF| threshold for panel2."
+        },
+        "panel2_min_sites": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "description": "Minimum CpG sites for panel2."
+        }
+      }
+    },
+    "atlas_building": {
+      "title": "Reference Atlas Building (Stage 1)",
+      "type": "object",
+      "description": "Parameters for building the reference atlas from control samples.",
+      "properties": {
+        "atlas_min_samples_per_site": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "description": "Minimum number of samples per CpG site."
+        },
+        "atlas_min_read_coverage": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "description": "Minimum read coverage to include a CpG site."
+        },
+        "atlas_shrinkage_weight": {
+          "type": "number",
+          "default": 0.1,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Empirical Bayes shrinkage weight for dispersion."
+        },
+        "smooth_sigma_narrow": {
+          "type": "integer",
+          "default": 150,
+          "minimum": 1,
+          "description": "Narrow Gaussian bandwidth (bp) for FFT smoothing."
+        },
+        "smooth_sigma_wide": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 1,
+          "description": "Wide Gaussian bandwidth (bp) for FFT smoothing."
+        }
+      }
+    },
+    "cpg_island_detection": {
+      "title": "CpG Island Detection (Stage 2)",
+      "type": "object",
+      "description": "Parameters for detecting hypomethylated CpG islands.",
+      "properties": {
+        "cpg_min_samples_per_site": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "description": "Minimum samples for pre-filtering."
+        },
+        "cpg_core_max_methylation": {
+          "type": "number",
+          "default": 0.1,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "CORE site REF_METH threshold."
+        },
+        "cpg_core_max_dispersion": {
+          "type": "number",
+          "default": 0.05,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "CORE site PHI threshold."
+        },
+        "cpg_shore_max_methylation": {
+          "type": "number",
+          "default": 0.3,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "SHORE site REF_METH threshold."
+        },
+        "cpg_max_gap_distance": {
+          "type": "integer",
+          "default": 150,
+          "minimum": 1,
+          "description": "Max gap for clustering and shore detection (bp)."
+        },
+        "cpg_min_island_length": {
+          "type": "integer",
+          "default": 150,
+          "minimum": 1,
+          "description": "Minimum island length (bp)."
+        }
+      }
+    },
+    "dmr_detection": {
+      "title": "DMR Detection (Stage 3)",
+      "type": "object",
+      "description": "Parameters for differentially methylated region detection.",
+      "properties": {
+        "dmr_min_coverage": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "description": "Minimum coverage for case samples."
+        },
+        "dmr_cpg_diff_threshold": {
+          "type": "number",
+          "default": 0.40,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "|DIFF| threshold for CpG panel."
+        },
+        "dmr_merge_distance": {
+          "type": "integer",
+          "default": 150,
+          "minimum": 1,
+          "description": "Max gap for merging CpG sites (bp)."
+        },
+        "dmr_fdr_threshold": {
+          "type": "number",
+          "default": 0.01,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "FDR significance threshold."
+        },
+        "dmr_cpg_min_sites": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "description": "Minimum CpG sites for CpG panel."
+        }
+      }
+    },
+    "resource_limits": {
+      "title": "Resource Limits",
+      "type": "object",
+      "description": "Computational resource limits. Auto-detected by default.",
+      "properties": {
+        "max_cpus": {
+          "type": "integer",
+          "description": "Maximum total CPUs. Default: min(80% of cores, RAM_GB / 4).",
+          "minimum": 1
+        },
+        "max_memory": {
+          "type": "string",
+          "description": "Maximum total memory. Default: 80% of system RAM.",
+          "pattern": "^\\d+(\\.\\d+)?\\s*(B|KB|MB|GB|TB)$"
+        },
+        "max_time": {
+          "type": "string",
+          "default": "168.h",
+          "description": "Maximum time per process.",
+          "pattern": "^\\d+(\\.\\d+)?\\s*(s|m|h|d)$"
+        },
+        "apptainer_bind": {
+          "type": "string",
+          "description": "Comma-separated host paths to bind-mount into the container."
+        },
+        "tmp_dir": {
+          "type": "string",
+          "format": "directory-path",
+          "description": "Custom temporary directory (sets TMPDIR/TMP/TEMP)."
+        }
+      }
+    }
+  },
+  "allOf": [
+    { "$ref": "#/$defs/input_output" },
+    { "$ref": "#/$defs/precomputed_references" },
+    { "$ref": "#/$defs/optional_panel" },
+    { "$ref": "#/$defs/atlas_building" },
+    { "$ref": "#/$defs/cpg_island_detection" },
+    { "$ref": "#/$defs/dmr_detection" },
+    { "$ref": "#/$defs/resource_limits" }
+  ]
+}
