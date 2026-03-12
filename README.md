@@ -296,4 +296,6 @@ If you use this pipeline in your research, please cite:
 
 ## License
 
-[Your license here]
+This project is licensed under the [MIT License](LICENSE).
+
+Copyright (c) 2025 Mark Ou
