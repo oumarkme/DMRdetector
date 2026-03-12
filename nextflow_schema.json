@@ -223,7 +223,7 @@
         "tmp_dir": {
           "type": "string",
           "format": "directory-path",
-          "description": "Custom temporary directory (sets TMPDIR/TMP/TEMP)."
+          "description": "Local temp directory for work/tmp files. Sets both workDir and TMPDIR. Recommended when inputs are on network storage."
         }
       }
     }

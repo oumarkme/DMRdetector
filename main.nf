@@ -24,8 +24,6 @@
  * Runs via Apptainer containers on Linux, WSL2, or macOS.
  */
 
-nextflow.enable.dsl = 2
-
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -37,7 +35,7 @@ def show_help() {
     =================================================================
 
     Usage:
-      nextflow run main.nf --input samplesheet.csv --gtf annotation.gtf.gz [options]
+      nextflow run main.nf --input samplesheet.csv [options]
 
     Required:
       --input           Samplesheet CSV (sample_id, type, meth_bed, vcf)
@@ -54,6 +52,10 @@ def show_help() {
 
     Output:
       --outdir          Output directory [default: ./results]
+
+    Performance:
+      --tmp_dir         Local temp directory for work/tmp files (recommended
+                        when inputs are on network storage)
 
     Input BED formats (auto-detected):
       - 5-column:   CHROM, START, END, COVERAGE, N_MOD
@@ -74,6 +76,7 @@ def validate_params() {
         exit 0
     }
     if (!params.input) {
+        show_help()
         error "ERROR: --input samplesheet is required"
     }
 }

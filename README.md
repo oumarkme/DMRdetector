@@ -121,8 +121,8 @@ CSV file with columns:
 
 ```csv
 sample_id,type,meth_bed,vcf
-ONT001,CASE,/path/to/ONT001.combined.bed.gz,/path/to/ONT001.phased.vcf
-ONT004,CTRL,/path/to/ONT004.combined.bed.gz,/path/to/ONT004.phased.vcf
+ONT001,CASE,/path/to/ONT001.combined.bed.gz,/path/to/ONT001.vcf
+ONT004,CTRL,/path/to/ONT004.combined.bed.gz,/path/to/ONT004.vcf
 ```
 
 | Column | Description |
@@ -130,7 +130,7 @@ ONT004,CTRL,/path/to/ONT004.combined.bed.gz,/path/to/ONT004.phased.vcf
 | `sample_id` | Unique sample identifier |
 | `type` | `CASE` or `CTRL` |
 | `meth_bed` | Path to methylation BED file (gzipped) |
-| `vcf` | Path to phased VCF file |
+| `vcf` | Path to VCF file (used to exclude heterozygous SNP sites) |
 
 ## Input BED Formats (auto-detected)
 
