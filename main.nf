@@ -814,8 +814,12 @@ workflow {
     // Stage 3: DMR detection
     // ====================================================================
 
+    // Filter to CASE samples only
+    ch_case_preprocessed = ch_all_preprocessed
+        .filter { meta, _bed -> meta.type == 'case' }
+
     DETECT_DMR(
-        ch_all_preprocessed,
+        ch_case_preprocessed,
         ch_ref_atlas,
         ch_cpg_panel,
         ch_panel2,

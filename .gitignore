@@ -22,6 +22,9 @@ Thumbs.db
 .Rhistory
 .RData
 
+# Local testing
+test/
+
 # Temporary
 *.tmp
 *.swp
