@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/oumarkme/nf-ontmeth/blob/main/nextflow_schema.json",
-  "title": "nf-ontmeth pipeline parameters",
+  "$id": "https://github.com/oumarkme/DMRdetector/blob/main/nextflow_schema.json",
+  "title": "DMRdetector pipeline parameters",
   "description": "ONT Methylation Analysis Pipeline — DMR detection from Oxford Nanopore WGS",
   "type": "object",
   "$defs": {

@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">nf-ontmeth</h1>
+  <h1 align="center">DMRdetector</h1>
   <p align="center">
     ONT Methylation Analysis Pipeline<br>
     <em>Detect differentially methylated regions from Oxford Nanopore (or PacBio) whole-genome sequencing data</em>
@@ -10,9 +10,9 @@
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0-blue.svg" alt="Version"></a>
   <a href="https://www.nextflow.io/"><img src="https://img.shields.io/badge/Nextflow-%E2%89%A523.04.0-brightgreen.svg" alt="Nextflow"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://ghcr.io/oumarkme/nf-ontmeth"><img src="https://img.shields.io/badge/Container-GHCR-blue.svg" alt="Container"></a>
+  <a href="https://ghcr.io/oumarkme/DMRdetector"><img src="https://img.shields.io/badge/Container-GHCR-blue.svg" alt="Container"></a>
   <a href="https://apptainer.org/"><img src="https://img.shields.io/badge/Apptainer-supported-orange.svg" alt="Apptainer"></a>
-  <a href="https://github.com/oumarkme/nf-ontmeth/actions"><img src="https://github.com/oumarkme/nf-ontmeth/actions/workflows/docker.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/oumarkme/DMRdetector/actions"><img src="https://github.com/oumarkme/DMRdetector/actions/workflows/docker.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20WSL2%20%7C%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/DOI-pending-grey.svg" alt="DOI">
 </p>
@@ -21,7 +21,7 @@
 
 ## Overview
 
-**nf-ontmeth** builds a population-level methylation reference atlas from control samples and detects differentially methylated regions (DMRs) in case samples. It supports an optional second panel for targeted region analysis (e.g., imprinted control regions).
+**DMRdetector** builds a population-level methylation reference atlas from control samples and detects differentially methylated regions (DMRs) in case samples. It supports an optional second panel for targeted region analysis (e.g., imprinted control regions).
 
 ### Pipeline Stages
 
@@ -54,15 +54,15 @@ CTRL + CASE samples
 We recommend using [Conda](https://docs.conda.io/) to manage Nextflow and Apptainer:
 
 ```bash
-conda create -n nf-ontmeth -c conda-forge -c bioconda nextflow apptainer
-conda activate nf-ontmeth
+conda create -n DMRdetector -c conda-forge -c bioconda nextflow apptainer
+conda activate DMRdetector
 ```
 
 ### 2. Download the pipeline
 
 ```bash
-git clone https://github.com/oumarkme/nf-ontmeth.git
-cd nf-ontmeth
+git clone https://github.com/oumarkme/DMRdetector.git
+cd DMRdetector
 ```
 
 ### 3. Run
@@ -73,7 +73,7 @@ nextflow run main.nf \
     --outdir results
 ```
 
-The container image is pulled automatically from [GHCR](https://ghcr.io/oumarkme/nf-ontmeth) on first run. The cached image is stored under `tmp_dir/apptainer/` (or `outdir/apptainer/` if `--tmp_dir` is not set).
+The container image is pulled automatically from [GHCR](https://ghcr.io/oumarkme/DMRdetector) on first run. The cached image is stored under `tmp_dir/apptainer/` (or `outdir/apptainer/` if `--tmp_dir` is not set).
 
 > **Tip:** Use `--tmp_dir /local/fast/disk` when your input files are on network storage for significantly faster I/O.
 

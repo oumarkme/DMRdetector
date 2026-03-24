@@ -11,4 +11,4 @@ RUN mamba install -y -c conda-forge -c bioconda \
     && mamba clean -afy
 
 LABEL maintainer="Mark" \
-      description="nf-ontmeth ONT Methylation Analysis Pipeline container"
+      description="DMRdetector ONT Methylation Analysis Pipeline container"

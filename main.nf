@@ -1,7 +1,7 @@
 #!/usr/bin/env nextflow
 
 /*
- * nf-ontmeth: ONT Methylation Analysis Pipeline
+ * DMRdetector: ONT Methylation Analysis Pipeline
  * ==============================================
  * Detects differentially methylated regions (DMRs) from Oxford Nanopore
  * Technologies (or PacBio) whole-genome sequencing data.
@@ -31,7 +31,7 @@
 def show_help() {
     log.info """
     =================================================================
-    nf-ontmeth v${workflow.manifest.version}
+    DMRdetector v${workflow.manifest.version}
     =================================================================
 
     Usage:

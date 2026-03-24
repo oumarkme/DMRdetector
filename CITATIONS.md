@@ -1,8 +1,8 @@
 # Citations
 
-## nf-ontmeth
+## DMRdetector
 
-> Chang M. nf-ontmeth: ONT Methylation Analysis Pipeline for DMR detection from Oxford Nanopore WGS. GitHub. https://github.com/oumarkme/nf-ontmeth
+> Chang M. DMRdetector: ONT Methylation Analysis Pipeline for DMR detection from Oxford Nanopore WGS. GitHub. https://github.com/oumarkme/DMRdetector
 
 ## Pipeline tools
 
