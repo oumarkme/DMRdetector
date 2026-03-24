@@ -65,7 +65,11 @@ git clone https://github.com/oumarkme/DMRdetector.git
 cd DMRdetector
 ```
 
-### 3. Run
+### 3. Download pre-built reference atlas (optional)
+
+A pre-built reference atlas is available on Zenodo: [10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867). You can use it to skip Stage 1–2 and run DMR detection directly (see [Advanced Usage](#skip-atlas-building-pre-built-references)).
+
+### 4. Run
 
 ```bash
 nextflow run main.nf \
