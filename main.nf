@@ -50,6 +50,13 @@ def show_help() {
       --ref_atlas       Pre-built reference atlas (tsv.gz)
       --cpg_panel       Pre-built CpG panel (bed)
 
+    Chromosome coverage:
+      --include_sex_chromosomes
+                        Include chrX and chrY in all stages [default: false].
+                        Autosomes (1-22) are always included. Sex chromosomes
+                        require special statistical treatment that this
+                        pipeline does not model.
+
     Output:
       --outdir          Output directory [default: ./results]
 
@@ -321,9 +328,13 @@ process SMOOTH_ATLAS {
 
     # Load data
     dt <- readRDS("${atlas_rds}")
-    standard_chroms <- c(as.character(1:22), "X", "Y", paste0("chr", c(1:22, "X", "Y")))
-    dt <- dt[CHROM %in% standard_chroms]
-    if (nrow(dt) == 0) stop("No standard chromosomes found")
+    include_sex <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
+    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+    dt <- dt[CHROM %in% allowed_chroms]
+    if (nrow(dt) == 0) stop("No allowed chromosomes found (include_sex_chromosomes=", include_sex, ")")
+    message(sprintf("Chromosome filter: include_sex_chromosomes=%s (%d chroms retained)",
+                    include_sex, length(unique(dt\$CHROM))))
     message(sprintf("Loaded %d CpG sites.", nrow(dt)))
     dt[, `:=`(REF_METH = as.numeric(NA), REF_VAR = as.numeric(NA))]
 
@@ -391,7 +402,17 @@ process DETECT_CPG_ISLANDS {
 
     # Step 1: Load and filter atlas
     ref_atlas <- fread("${ref_atlas}")
+    ref_atlas[, CHROM := as.character(CHROM)]
     cat("  Loaded", nrow(ref_atlas), "sites\\n")
+
+    # Apply chromosome filter (handles the DMR-only case where a user-supplied
+    # atlas may contain sex chromosomes that the current run wants to exclude)
+    include_sex <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
+    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+    ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
+    cat("  After chromosome filter (include_sex=", include_sex, "):", nrow(ref_atlas), "sites\\n")
+
     ref_atlas <- ref_atlas[N > min_samples]
     cat("  After N >", min_samples, "filter:", nrow(ref_atlas), "sites\\n")
 
@@ -448,10 +469,63 @@ process DETECT_CPG_ISLANDS {
 }
 
 // ============================================================================
-// Process: DETECT_DMR
+// Process: PARSE_GTF
+// ----------------------------------------------------------------------------
+// Runs once per pipeline. Parses the Ensembl GTF into a slim gene-annotation
+// table used downstream for DMR gene overlap. Avoids re-parsing the GTF for
+// every CASE sample.
 // ============================================================================
 
-process DETECT_DMR {
+process PARSE_GTF {
+    label 'light'
+
+    input:
+        path gtf_file
+
+    output:
+        path "gene_annot.tsv.gz", emit: gene_annot
+
+    script:
+    """
+    #!/usr/bin/env Rscript
+    suppressPackageStartupMessages(library(data.table))
+    setDTthreads(${task.cpus})
+
+    include_sex <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
+    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+
+    message("Parsing GTF...")
+    gtf <- fread(cmd = sprintf("zcat %s | grep -v '^#'", "${gtf_file}"),
+                 sep = "\\t", header = FALSE,
+                 col.names = c("CHROM","source","feature","start","end",
+                               "score","strand","frame","attributes"))
+    gtf <- gtf[feature == "gene"]
+    gtf[, CHROM := as.character(CHROM)]
+    gtf <- gtf[CHROM %in% allowed_chroms]
+    gtf[, gene_name := sub('.*gene_name "([^"]+)".*', "\\\\1", attributes)]
+    gtf[, gene_biotype := sub('.*gene_biotype "([^"]+)".*', "\\\\1", attributes)]
+    biotype_priority <- c("protein_coding" = 1L, "lncRNA" = 2L, "processed_pseudogene" = 3L)
+    gtf[, priority := fifelse(gene_biotype %in% names(biotype_priority),
+                              biotype_priority[gene_biotype], 99L)]
+    setnames(gtf, c("start","end"), c("gene_start","gene_end"))
+    out <- gtf[, .(CHROM, gene_start, gene_end, gene_name, priority)]
+    setorder(out, CHROM, gene_start)
+
+    fwrite(out, "gene_annot.tsv.gz", sep = "\\t")
+    message(sprintf("Wrote %d gene records (include_sex=%s)", nrow(out), include_sex))
+    """
+}
+
+// ============================================================================
+// Process: CALL_DMR
+// ----------------------------------------------------------------------------
+// Per-sample DMR calling: merges the sample with the reference atlas, finds
+// over-threshold sites inside each panel, merges them, runs a t-test plus
+// Benjamini-Hochberg FDR, and emits raw DMR records (unannotated, unformatted).
+// ============================================================================
+
+process CALL_DMR {
     label 'medium'
     tag "${meta.id}_${meta.type}"
 
@@ -460,10 +534,9 @@ process DETECT_DMR {
         path ref_atlas
         path cpg_panel
         path panel2
-        path gtf_file
 
     output:
-        path "dmr_${meta.id}_${meta.type}.tsv", optional: true
+        tuple val(meta), path("dmr_raw_${meta.id}_${meta.type}.tsv.gz"), optional: true
 
     script:
     def has_panel2 = panel2.name != 'NO_FILE'
@@ -475,16 +548,21 @@ process DETECT_DMR {
     # Parameters
     sample_id   <- "${meta.id}"
     sample_type <- "${meta.type}"
-    cpg_diff_threshold <- ${params.dmr_cpg_diff_threshold}
+    cpg_diff_threshold    <- ${params.dmr_cpg_diff_threshold}
     panel2_diff_threshold <- ${params.panel2_diff_threshold}
-    merge_distance <- ${params.dmr_merge_distance}
-    fdr_threshold <- ${params.dmr_fdr_threshold}
-    cpg_min_sites <- ${params.dmr_cpg_min_sites}
-    panel2_min_sites <- ${params.panel2_min_sites}
-    has_panel2 <- ${has_panel2 ? 'TRUE' : 'FALSE'}
-    output_file <- "dmr_${meta.id}_${meta.type}.tsv"
+    merge_distance        <- ${params.dmr_merge_distance}
+    fdr_threshold         <- ${params.dmr_fdr_threshold}
+    cpg_min_sites         <- ${params.dmr_cpg_min_sites}
+    panel2_min_sites      <- ${params.panel2_min_sites}
+    has_panel2            <- ${has_panel2 ? 'TRUE' : 'FALSE'}
+    include_sex           <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
+    output_file <- "dmr_raw_${meta.id}_${meta.type}.tsv.gz"
 
-    message(sprintf("Processing sample: %s (%s)", sample_id, sample_type))
+    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+
+    message(sprintf("Processing sample: %s (%s) | include_sex=%s",
+                    sample_id, sample_type, include_sex))
 
     # ---- Helper functions ----
     find_sites_in_regions <- function(sites, regions, start_col, end_col) {
@@ -532,6 +610,145 @@ process DETECT_DMR {
         regions
     }
 
+    # Shared post-merge stats: t-test, BH-FDR, final filter
+    finalise_dmrs <- function(merged, fdr_threshold, min_sites) {
+        merged <- run_ttest(merged)
+        if (nrow(merged) == 0) return(data.table())
+        if (any(!is.na(merged\$P_VALUE))) {
+            merged[, P_FDR := p.adjust(P_VALUE, method = "BH")]
+        } else {
+            merged[, P_FDR := NA_real_]
+        }
+        merged[!is.na(P_FDR) & P_FDR < fdr_threshold & NUM_CPG > min_sites]
+    }
+
+    # ---- Load data (with chromosome filter) ----
+    message("Loading sample data...")
+    sample_data <- fread(cmd = sprintf("zcat %s", "${sample_bed}"),
+                         col.names = c("CHROM", "START", "END", "COVERAGE", "N_METH"))
+    sample_data[, CHROM := as.character(CHROM)]
+    sample_data <- sample_data[CHROM %in% allowed_chroms]
+    sample_data[, SAMPLE_METH := N_METH / COVERAGE]
+
+    message("Loading reference atlas...")
+    ref_atlas <- fread(cmd = sprintf("zcat %s", "${ref_atlas}"),
+                       select = c("CHROM", "START", "END", "REF_METH", "REF_VAR"))
+    ref_atlas[, CHROM := as.character(CHROM)]
+    ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
+
+    message("Loading CpG panel...")
+    cpg_panel <- fread("${cpg_panel}")
+    cpg_panel[, CHROM := as.character(CHROM)]
+    cpg_panel <- cpg_panel[CHROM %in% allowed_chroms]
+    # Ensure integer types for foverlaps (needed when panel is empty/header-only)
+    for (col in c("START","END","START_EXTEND","END_EXTEND","LENGTH","NUM_CPG")) {
+        if (col %in% names(cpg_panel)) cpg_panel[, (col) := as.integer(get(col))]
+    }
+
+    # ---- Merge sample and reference ----
+    message("Merging sample and reference data...")
+    setkey(sample_data, CHROM, START)
+    setkey(ref_atlas, CHROM, START)
+    merged <- merge(sample_data[, .(CHROM, START, COVERAGE, N_METH, SAMPLE_METH)],
+                    ref_atlas[, .(CHROM, START, REF_METH, REF_VAR)],
+                    by = c("CHROM", "START"))
+    merged[, DIFF := SAMPLE_METH - REF_METH]
+    message(sprintf("  Merged: %d sites", nrow(merged)))
+
+    # ---- CpG panel: merge across regions within each chromosome ----
+    message("Processing CpG panel...")
+    cpg_sites    <- find_sites_in_regions(merged, cpg_panel, "START_EXTEND", "END_EXTEND")
+    cpg_filtered <- cpg_sites[abs(DIFF) > cpg_diff_threshold]
+    cpg_merged   <- merge_sites(cpg_filtered, merge_distance)
+    cpg_dmrs     <- finalise_dmrs(cpg_merged, fdr_threshold, cpg_min_sites)
+    message(sprintf("  CpG DMRs: %d (from %d sites)", nrow(cpg_dmrs), nrow(cpg_sites)))
+    if (nrow(cpg_dmrs) > 0) {
+        cpg_dmrs[, PANEL := "CpG"]
+        cpg_dmrs[, DIRECTION := fifelse(MEAN_DIFF > 0, "hyper", "hypo")]
+    }
+
+    # ---- Panel2 (optional): merge within each region separately ----
+    if (has_panel2) {
+        message("Processing panel2...")
+        panel2_dt <- fread("${panel2}", header = FALSE, col.names = c("CHROM", "START", "END"))
+        panel2_dt[, CHROM := as.character(CHROM)]
+        panel2_dt <- panel2_dt[CHROM %in% allowed_chroms]
+        p2_sites    <- find_sites_in_regions(merged, panel2_dt, "START", "END")
+        p2_filtered <- p2_sites[abs(DIFF) > panel2_diff_threshold]
+
+        if (nrow(p2_filtered) > 0) {
+            p2_merged <- p2_filtered[, {
+                dt <- copy(.SD); setorder(dt, START)
+                dt[, gap := c(Inf, diff(START))]
+                dt[, cluster := cumsum(gap > merge_distance)]
+                dt[, .(START = min(START), END = max(START) + 1L, NUM_CPG = .N,
+                       NUM_READS = mean(COVERAGE, na.rm = TRUE),
+                       MEAN_SAMPLE = mean(SAMPLE_METH, na.rm = TRUE),
+                       MEAN_REF = mean(REF_METH, na.rm = TRUE),
+                       MEAN_DIFF = mean(DIFF, na.rm = TRUE),
+                       DIFF_VALUES = list(DIFF)), by = cluster][, cluster := NULL]
+            }, by = .(CHROM, REGION_START, REGION_END)]
+            p2_merged[, c("REGION_START", "REGION_END") := NULL]
+        } else {
+            p2_merged <- data.table()
+        }
+        p2_dmrs <- finalise_dmrs(p2_merged, fdr_threshold, panel2_min_sites)
+        message(sprintf("  Panel2 DMRs: %d (from %d sites)", nrow(p2_dmrs), nrow(p2_sites)))
+        if (nrow(p2_dmrs) > 0) {
+            p2_dmrs[, PANEL := "Panel2"]
+            p2_dmrs[, DIRECTION := fifelse(MEAN_DIFF > 0, "hyper", "hypo")]
+        }
+    } else {
+        p2_dmrs <- data.table()
+    }
+
+    # ---- Combine and emit raw (unannotated) DMRs ----
+    raw_cols <- c("CHROM","START","END","PANEL","NUM_CPG","NUM_READS",
+                  "MEAN_SAMPLE","MEAN_REF","MEAN_DIFF","P_VALUE","P_FDR","DIRECTION")
+    all_dmrs <- rbindlist(list(cpg_dmrs, p2_dmrs), use.names = TRUE, fill = TRUE)
+    for (col in raw_cols) if (!col %in% names(all_dmrs)) all_dmrs[, (col) := NA]
+    all_dmrs <- all_dmrs[, ..raw_cols]
+    setorder(all_dmrs, CHROM, START)
+
+    message(sprintf("Total DMRs: %d (CpG: %d, Panel2: %d)",
+                    nrow(all_dmrs), nrow(cpg_dmrs), nrow(p2_dmrs)))
+    fwrite(all_dmrs, output_file, sep = "\\t", quote = FALSE)
+    """
+}
+
+// ============================================================================
+// Process: ANNOTATE_DMRS
+// ----------------------------------------------------------------------------
+// Adds nearest-gene annotation (biotype-prioritised) and produces the final
+// publishable TSV with percentage-scaled methylation columns.
+// ============================================================================
+
+process ANNOTATE_DMRS {
+    label 'light'
+    tag "${meta.id}_${meta.type}"
+
+    input:
+        tuple val(meta), path(dmr_raw)
+        path gene_annot
+
+    output:
+        path "dmr_${meta.id}_${meta.type}.tsv", optional: true
+
+    script:
+    """
+    #!/usr/bin/env Rscript
+    suppressPackageStartupMessages(library(data.table))
+    setDTthreads(${task.cpus})
+
+    message(sprintf("Annotating DMRs for %s (%s)", "${meta.id}", "${meta.type}"))
+
+    dmrs <- fread("${dmr_raw}")
+    gtf  <- fread("${gene_annot}")
+    # fread auto-coerces numeric-looking columns to integer; force character so
+    # both tables line up for foverlaps.
+    if (nrow(dmrs) > 0) dmrs[, CHROM := as.character(CHROM)]
+    gtf[, CHROM := as.character(CHROM)]
+
     annotate_genes <- function(regions, gtf) {
         if (nrow(regions) == 0) { regions[, GENE := character()]; return(regions) }
         gtf_dt <- copy(gtf)
@@ -553,140 +770,27 @@ process DETECT_DMR {
         regions_dt
     }
 
-    # ---- Load data ----
-    message("Loading sample data...")
-    sample_data <- fread(cmd = sprintf("zcat %s", "${sample_bed}"),
-                         col.names = c("CHROM", "START", "END", "COVERAGE", "N_METH"))
-    sample_data[, CHROM := as.character(CHROM)]
-    sample_data[, SAMPLE_METH := N_METH / COVERAGE]
+    if (nrow(dmrs) > 0) dmrs <- annotate_genes(dmrs, gtf)
+    if (!"GENE" %in% names(dmrs)) dmrs[, GENE := NA_character_]
 
-    message("Loading reference atlas...")
-    ref_atlas <- fread(cmd = sprintf("zcat %s", "${ref_atlas}"),
-                       select = c("CHROM", "START", "END", "REF_METH", "REF_VAR"))
-    ref_atlas[, CHROM := as.character(CHROM)]
-
-    message("Loading CpG panel...")
-    cpg_panel <- fread("${cpg_panel}")
-    cpg_panel[, CHROM := as.character(CHROM)]
-    # Ensure integer types for foverlaps (needed when panel is empty/header-only)
-    for (col in c("START","END","START_EXTEND","END_EXTEND","LENGTH","NUM_CPG")) {
-        if (col %in% names(cpg_panel)) cpg_panel[, (col) := as.integer(get(col))]
-    }
-
-    message("Loading GTF file...")
-    gtf <- fread(cmd = sprintf("zcat %s | grep -v '^#'", "${gtf_file}"),
-                 sep = "\\t", header = FALSE,
-                 col.names = c("CHROM","source","feature","start","end","score","strand","frame","attributes"))
-    gtf <- gtf[feature == "gene"]
-    gtf[, CHROM := as.character(CHROM)]
-    gtf[, gene_name := sub('.*gene_name "([^"]+)".*', "\\\\1", attributes)]
-    gtf[, gene_biotype := sub('.*gene_biotype "([^"]+)".*', "\\\\1", attributes)]
-    gtf[, c("source","feature","score","strand","frame","attributes") := NULL]
-    setnames(gtf, c("start","end"), c("gene_start","gene_end"))
-    biotype_priority <- c("protein_coding"=1,"lncRNA"=2,"processed_pseudogene"=3)
-    gtf[, priority := fifelse(gene_biotype %in% names(biotype_priority), biotype_priority[gene_biotype], 99L)]
-
-    # ---- Merge sample and reference ----
-    message("Merging sample and reference data...")
-    setkey(sample_data, CHROM, START)
-    setkey(ref_atlas, CHROM, START)
-    merged <- merge(sample_data[, .(CHROM, START, COVERAGE, N_METH, SAMPLE_METH)],
-                    ref_atlas[, .(CHROM, START, REF_METH, REF_VAR)],
-                    by = c("CHROM", "START"))
-    merged[, DIFF := SAMPLE_METH - REF_METH]
-    message(sprintf("  Merged: %d sites", nrow(merged)))
-
-    # ---- Process CpG panel ----
-    message("Processing CpG panel...")
-    cpg_sites <- find_sites_in_regions(merged, cpg_panel, "START_EXTEND", "END_EXTEND")
-    message(sprintf("  Sites in CpG regions: %d", nrow(cpg_sites)))
-    cpg_filtered <- cpg_sites[abs(DIFF) > cpg_diff_threshold]
-    cpg_merged <- merge_sites(cpg_filtered, merge_distance)
-    cpg_merged <- run_ttest(cpg_merged)
-    if (nrow(cpg_merged) > 0) {
-        if (any(!is.na(cpg_merged\$P_VALUE))) {
-            cpg_merged[, P_FDR := p.adjust(P_VALUE, method = "BH")]
-        } else {
-            cpg_merged[, P_FDR := NA_real_]
-        }
-        cpg_dmrs <- cpg_merged[!is.na(P_FDR) & P_FDR < fdr_threshold & NUM_CPG > cpg_min_sites]
-    } else {
-        cpg_dmrs <- data.table()
-    }
-    message(sprintf("  CpG DMRs: %d", nrow(cpg_dmrs)))
-    if (nrow(cpg_dmrs) > 0) {
-        cpg_dmrs <- annotate_genes(cpg_dmrs, gtf)
-        cpg_dmrs[, PANEL := "CpG"]
-        cpg_dmrs[, DIRECTION := fifelse(MEAN_DIFF > 0, "hyper", "hypo")]
-    }
-
-    # ---- Process panel2 (optional) ----
-    if (has_panel2) {
-        message("Processing panel2...")
-        panel2_dt <- fread("${panel2}", header = FALSE, col.names = c("CHROM", "START", "END"))
-        panel2_dt[, CHROM := as.character(CHROM)]
-        p2_sites <- find_sites_in_regions(merged, panel2_dt, "START", "END")
-        message(sprintf("  Sites in panel2 regions: %d", nrow(p2_sites)))
-        p2_filtered <- p2_sites[abs(DIFF) > panel2_diff_threshold]
-
-        # Merge within each panel2 region separately
-        if (nrow(p2_filtered) > 0) {
-            p2_merged <- p2_filtered[, {
-                dt <- copy(.SD); setorder(dt, START)
-                dt[, gap := c(Inf, diff(START))]
-                dt[, cluster := cumsum(gap > merge_distance)]
-                dt[, .(START = min(START), END = max(START) + 1L, NUM_CPG = .N,
-                       NUM_READS = mean(COVERAGE, na.rm=TRUE),
-                       MEAN_SAMPLE = mean(SAMPLE_METH, na.rm=TRUE),
-                       MEAN_REF = mean(REF_METH, na.rm=TRUE),
-                       MEAN_DIFF = mean(DIFF, na.rm=TRUE),
-                       DIFF_VALUES = list(DIFF)), by = cluster][, cluster := NULL]
-            }, by = .(CHROM, REGION_START, REGION_END)]
-            p2_merged[, c("REGION_START", "REGION_END") := NULL]
-        } else {
-            p2_merged <- data.table()
-        }
-
-        p2_merged <- run_ttest(p2_merged)
-        if (nrow(p2_merged) > 0) {
-            if (any(!is.na(p2_merged\$P_VALUE))) {
-                p2_merged[, P_FDR := p.adjust(P_VALUE, method = "BH")]
-            } else {
-                p2_merged[, P_FDR := NA_real_]
-            }
-            p2_dmrs <- p2_merged[!is.na(P_FDR) & P_FDR < fdr_threshold & NUM_CPG > panel2_min_sites]
-        } else {
-            p2_dmrs <- data.table()
-        }
-        message(sprintf("  Panel2 DMRs: %d", nrow(p2_dmrs)))
-        if (nrow(p2_dmrs) > 0) {
-            p2_dmrs <- annotate_genes(p2_dmrs, gtf)
-            p2_dmrs[, PANEL := "Panel2"]
-            p2_dmrs[, DIRECTION := fifelse(MEAN_DIFF > 0, "hyper", "hypo")]
-        }
-    } else {
-        p2_dmrs <- data.table()
-    }
-
-    # ---- Combine and output ----
-    all_dmrs <- rbindlist(list(cpg_dmrs, p2_dmrs), use.names = TRUE, fill = TRUE)
-    output_cols <- c("CHROM","START","END","GENE","PANEL","NUM_CPG","NUM_READS",
-                     "MEAN_SAMPLE","MEAN_REF","MEAN_DIFF","P_VALUE","P_FDR","DIRECTION")
+    output_cols  <- c("CHROM","START","END","GENE","PANEL","NUM_CPG","NUM_READS",
+                      "MEAN_SAMPLE","MEAN_REF","MEAN_DIFF","P_VALUE","P_FDR","DIRECTION")
     output_names <- c("CHROM","START","END","GENE","PANEL","NUM_CPG","NUM_READS",
                       "SAMPLE_METH (%)","REF_METH (%)","DIFF (%)","P_VALUE","P_FDR","DIRECTION")
-    for (col in output_cols) if (!col %in% names(all_dmrs)) all_dmrs[, (col) := NA]
-    all_dmrs <- all_dmrs[, ..output_cols]
-    if (nrow(all_dmrs) > 0) {
-        all_dmrs[, NUM_READS := round(NUM_READS)]
-        all_dmrs[, MEAN_SAMPLE := round(MEAN_SAMPLE * 100, 1)]
-        all_dmrs[, MEAN_REF := round(MEAN_REF * 100, 1)]
-        all_dmrs[, MEAN_DIFF := round(MEAN_DIFF * 100, 1)]
+    for (col in output_cols) if (!col %in% names(dmrs)) dmrs[, (col) := NA]
+    dmrs <- dmrs[, ..output_cols]
+    if (nrow(dmrs) > 0) {
+        dmrs[, NUM_READS   := round(NUM_READS)]
+        dmrs[, MEAN_SAMPLE := round(MEAN_SAMPLE * 100, 1)]
+        dmrs[, MEAN_REF    := round(MEAN_REF * 100, 1)]
+        dmrs[, MEAN_DIFF   := round(MEAN_DIFF * 100, 1)]
     }
-    setnames(all_dmrs, output_cols, output_names)
-    setorder(all_dmrs, CHROM, START)
-    message(sprintf("Total DMRs: %d (CpG: %d, Panel2: %d)", nrow(all_dmrs), nrow(cpg_dmrs), nrow(p2_dmrs)))
-    fwrite(all_dmrs, output_file, sep = "\\t", quote = FALSE)
-    message("Output written to: ", output_file)
+    setnames(dmrs, output_cols, output_names)
+    setorder(dmrs, CHROM, START)
+
+    out_file <- "dmr_${meta.id}_${meta.type}.tsv"
+    fwrite(dmrs, out_file, sep = "\\t", quote = FALSE)
+    message(sprintf("Wrote %d annotated DMRs to %s", nrow(dmrs), out_file))
     """
 }
 
@@ -721,6 +825,40 @@ process DOWNLOAD_GTF {
 // ============================================================================
 
 def parse_samplesheet(csv_file) {
+    // Eagerly validate header, type values, and duplicate sample_ids before the
+    // channel is consumed — catches user errors at launch instead of deep in a
+    // process execution.
+    def required_cols = ['sample_id', 'type', 'meth_bed', 'vcf']
+    def allowed_types = ['case', 'ctrl']
+    def sheet = file(csv_file, checkIfExists: true)
+    def lines = sheet.readLines()
+    if (lines.isEmpty()) {
+        error "ERROR: samplesheet ${csv_file} is empty"
+    }
+
+    def header = lines[0].split(',').collect { it.trim() }
+    def missing = required_cols - header
+    if (missing) {
+        error "ERROR: samplesheet ${csv_file} is missing required column(s): ${missing.join(', ')}. Expected header: ${required_cols.join(',')}"
+    }
+
+    def seen_ids = [] as Set
+    lines.drop(1).eachWithIndex { line, idx ->
+        if (!line?.trim()) return
+        def cells = line.split(',').collect { it.trim() }
+        def row   = [header, cells].transpose().collectEntries()
+        def row_n = idx + 2
+        if (!row.sample_id) {
+            error "ERROR: samplesheet row ${row_n}: sample_id is empty"
+        }
+        if (!seen_ids.add(row.sample_id)) {
+            error "ERROR: samplesheet row ${row_n}: duplicate sample_id '${row.sample_id}'"
+        }
+        if (!(row.type?.toLowerCase() in allowed_types)) {
+            error "ERROR: samplesheet row ${row_n} (sample_id=${row.sample_id}): type must be CASE or CTRL, got '${row.type}'"
+        }
+    }
+
     return channel.fromPath(csv_file, checkIfExists: true)
         .splitCsv(header: true, strip: true)
         .map { row ->
@@ -811,18 +949,24 @@ workflow {
     }
 
     // ====================================================================
-    // Stage 3: DMR detection
+    // Stage 3: DMR detection (split into PARSE_GTF + CALL_DMR + ANNOTATE_DMRS)
     // ====================================================================
+
+    // Parse GTF once; reuse across all CASE samples as a value channel.
+    ch_gene_annot = PARSE_GTF(ch_gtf).gene_annot.collect().map { files -> files[0] }
 
     // Filter to CASE samples only
     ch_case_preprocessed = ch_all_preprocessed
         .filter { meta, _bed -> meta.type == 'case' }
 
-    DETECT_DMR(
+    // Per-sample DMR calling (raw, unannotated)
+    ch_dmr_raw = CALL_DMR(
         ch_case_preprocessed,
         ch_ref_atlas,
         ch_cpg_panel,
-        ch_panel2,
-        ch_gtf
+        ch_panel2
     )
+
+    // Per-sample gene annotation + final formatting (published to outdir/dmr)
+    ANNOTATE_DMRS(ch_dmr_raw, ch_gene_annot)
 }

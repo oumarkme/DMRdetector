@@ -21,8 +21,8 @@
 - **htslib**
   > Bonfield JK, et al. HTSlib: C library for reading/writing high-throughput sequencing data. *GigaScience* 10(2), giab007 (2021). https://doi.org/10.1093/gigascience/giab007
 
-- **biomaRt**
-  > Durinck S, et al. BioMart and Bioconductor: a powerful link between biological databases and microarray data analysis. *Bioinformatics* 21(16), 3439-3440 (2005). https://doi.org/10.1093/bioinformatics/bti525
+- **Ensembl** (gene annotations auto-downloaded by `DOWNLOAD_GTF`)
+  > Martin FJ, et al. Ensembl 2023. *Nucleic Acids Research* 51(D1), D933-D941 (2023). https://doi.org/10.1093/nar/gkac958
 
 ## Container
 

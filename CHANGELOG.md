@@ -3,6 +3,44 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.1] - 2026-04-21
+
+Publication-ready release accompanying the manuscript *"Quick detection of
+differentially methylated regions for CpG islands and imprinted CpGs based on
+an ONT methylation reference atlas."*
+
+### Added
+
+- `--include_sex_chromosomes` parameter (default: `false`). Autosomes (1-22)
+  are always analysed; chrX/chrY are opt-in because they require special
+  statistical treatment (ploidy, X-inactivation) not modelled here.
+- Samplesheet validation at launch: required headers (`sample_id,type,meth_bed,vcf`),
+  `type` ∈ {CASE, CTRL}, no duplicate `sample_id`s. Clear row-level error messages.
+- `test/smoke/` end-to-end smoke test with synthetic chr22 data (3 CTRL + 1 CASE),
+  exercising default, `--include_sex_chromosomes true`, and malformed-samplesheet
+  scenarios.
+
+### Changed
+
+- Split the monolithic `DETECT_DMR` process into three focused processes:
+  - `PARSE_GTF` — runs once, parses the Ensembl GTF into a slim gene-annotation
+    table (avoids re-parsing the GTF for every CASE sample).
+  - `CALL_DMR` — per-sample DMR calling (sample/atlas merge, panel overlap,
+    t-test, BH-FDR). Shared `finalise_dmrs()` helper removes duplicated
+    post-merge statistics between CpG and Panel2 branches.
+  - `ANNOTATE_DMRS` — per-sample nearest-gene annotation and final formatting.
+  Each process's R block now fits on one screen; `main.nf` dropped from 830 to
+  ~560 lines.
+- Container pinned from `:latest` to `:v1.0` for reproducible publication runs.
+- Container image reference normalised to lowercase (`ghcr.io/oumarkme/dmrdetector`)
+  to satisfy strict Apptainer reference-format validation.
+
+### Removed
+
+- `bioconductor-biomart` from the container — never imported by any script.
+  Shrinks the image and simplifies the dependency surface.
+
+
 ## [1.0] - 2026-03-12
 
 First public release.

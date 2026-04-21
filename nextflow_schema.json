@@ -195,6 +195,18 @@
         }
       }
     },
+    "chromosome_filter": {
+      "title": "Chromosome Filter",
+      "type": "object",
+      "description": "Control which chromosomes are analysed. Autosomes (1-22) are always included.",
+      "properties": {
+        "include_sex_chromosomes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include X and Y chromosomes in atlas building, CpG-island detection, and DMR detection. Default: false (autosomes only). Sex chromosomes require special statistical treatment (ploidy, X-inactivation) that this pipeline does not model."
+        }
+      }
+    },
     "resource_limits": {
       "title": "Resource Limits",
       "type": "object",
@@ -235,6 +247,7 @@
     { "$ref": "#/$defs/atlas_building" },
     { "$ref": "#/$defs/cpg_island_detection" },
     { "$ref": "#/$defs/dmr_detection" },
+    { "$ref": "#/$defs/chromosome_filter" },
     { "$ref": "#/$defs/resource_limits" }
   ]
 }

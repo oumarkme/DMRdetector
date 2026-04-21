@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0-blue.svg" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.1-blue.svg" alt="Version"></a>
   <a href="https://www.nextflow.io/"><img src="https://img.shields.io/badge/Nextflow-%E2%89%A523.04.0-brightgreen.svg" alt="Nextflow"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://ghcr.io/oumarkme/DMRdetector"><img src="https://img.shields.io/badge/Container-GHCR-blue.svg" alt="Container"></a>
@@ -34,8 +34,16 @@ CTRL + CASE samples
   │
   ├─ Stage 2: DETECT CpG ─── CTRL only ─── identify CORE/SHORE, cluster, extend
   │
-  └─ Stage 3: DETECT DMRs ── CASE only ─── compare vs reference, T-test + FDR
+  └─ Stage 3: DETECT DMRs ── CASE only
+        ├─ PARSE_GTF       (once)      gene annotation table
+        ├─ CALL_DMR        (per case)  sample/atlas merge, t-test, FDR
+        └─ ANNOTATE_DMRS   (per case)  nearest-gene overlap, final TSV
 ```
+
+Autosomes (1-22) are always analysed. Sex chromosomes (X, Y) are excluded by
+default because they require special statistical treatment (ploidy,
+X-inactivation) that this pipeline does not model. Use
+`--include_sex_chromosomes true` to opt in.
 
 ### Usage Scenarios
 
@@ -218,6 +226,7 @@ nextflow run main.nf --input samplesheet.csv --dmr_fdr_threshold 0.05
 | `dmr_cpg_min_sites` | 30 | Min CpG sites for CpG panel |
 | `panel2_diff_threshold` | 0.25 | \|DIFF\| threshold for panel2 |
 | `panel2_min_sites` | 5 | Min CpG sites for panel2 |
+| `include_sex_chromosomes` | false | Include chrX/chrY in atlas, CpG panel, and DMR detection |
 
 </details>
 
