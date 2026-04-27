@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3] - 2026-04-27
+
+### Changed
+
+- Redesigned sex-chromosome analysis around component scopes:
+  `autosomal`, `male_X`, `female_X`, and `Y`.
+- PAR now stays with chrX/chrY in methylation analysis. PAR coordinates are
+  still used for VCF-based sex inference, but PAR rows are no longer merged
+  into the autosomal atlas.
+- CpG island identification now uses male-derived atlas scopes only:
+  autosomal, `male_X`, and `Y`. Female chrX DMRs reuse the `male_X` CpG
+  panel while comparing against the `female_X` atlas.
+- CASE DMR routing is sex-specific: male CASE samples run
+  `autosomal + male_X + Y`, female CASE samples run
+  `autosomal + female_X`, and unknown-sex CASE samples run autosomal only.
+- ICR/panel2 analysis is restricted to autosomes and excludes X/Y rows.
+- `sex_f_*` parameters are retained for compatibility but are inactive in the
+  v1.3 DMR path.
+
+## [1.2] - 2026-04-27
+
 ### Added
 
 - Sex-stratified chrX/chrY analysis, enabled by default
@@ -51,6 +72,9 @@ All notable changes to this project will be documented in this file.
 - `ANNOTATE_DMRS` now groups raw per-scope DMR files by sample and emits
   the `PANEL_SCOPE` column only when sex branches are active (autosomes-only
   output remains byte-identical with pre-feature releases).
+- Default Apptainer execution now uses the GitHub Actions-published SIF image
+  (`oras://ghcr.io/oumarkme/dmrdetector-apptainer:sha-a00657d`); Docker
+  profile execution uses `ghcr.io/oumarkme/dmrdetector:sha-a00657d`.
 
 ### Fixed
 
@@ -58,6 +82,9 @@ All notable changes to this project will be documented in this file.
   which later broke `ANNOTATE_DMRS` (`foverlaps` rejected the NA start).
   Empty-result files are now written as header-only with the canonical
   schema.
+- GTF and raw DMR chromosome names are normalized before annotation so both
+  Ensembl-style (`1`, `2`, `X`, `Y`) and UCSC-style (`chr1`, `chr2`, `chrX`,
+  `chrY`) inputs annotate correctly. Final DMR output uses UCSC-style names.
 
 
 ## [1.1] - 2026-04-21

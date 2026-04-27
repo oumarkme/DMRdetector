@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.1-blue.svg" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3-blue.svg" alt="Version"></a>
   <a href="https://www.nextflow.io/"><img src="https://img.shields.io/badge/Nextflow-%E2%89%A523.04.0-brightgreen.svg" alt="Nextflow"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://ghcr.io/oumarkme/DMRdetector"><img src="https://img.shields.io/badge/Container-GHCR-blue.svg" alt="Container"></a>
@@ -42,8 +42,8 @@ CTRL + CASE samples
 
 Autosomes (1-22) are always analysed. Sex chromosomes (X, Y) are handled by
 a sex-stratified workflow that runs by **default**: the pipeline infers
-sample sex from the VCF, splits PAR (treated as autosomal) from non-PAR,
-and builds male- and female-specific references for non-PAR chrX/chrY. Pass
+sample sex from the VCF and builds component references for autosomes,
+male chrX, female chrX, and chrY. PAR stays with X/Y in v1.3. Pass
 `--include_sex_chromosomes false` to restrict the run to autosomes only.
 See [Sex-chromosome analysis](#sex-chromosome-analysis) below.
 
@@ -87,7 +87,7 @@ nextflow run main.nf \
     --outdir results
 ```
 
-The container image is pulled automatically from [GHCR](https://ghcr.io/oumarkme/DMRdetector) on first run. The cached image is stored under `tmp_dir/apptainer/` (or `outdir/apptainer/` if `--tmp_dir` is not set).
+The Apptainer image is pulled automatically from [GHCR](https://ghcr.io/oumarkme/DMRdetector) on first run. The cached image is stored under `tmp_dir/apptainer/` (or `outdir/apptainer/` if `--tmp_dir` is not set). Docker users can run the same pipeline with `-profile docker`.
 
 > **Tip:** Use `--tmp_dir /local/fast/disk` when your input files are on network storage for significantly faster I/O.
 
@@ -154,16 +154,18 @@ nextflow run main.nf \
 ```
 results/
 ├── atlas/
-│   ├── ref_atlas_150.tsv.gz      # Autosomal + PAR reference atlas (narrow)
-│   ├── ref_atlas_500.tsv.gz      # Autosomal + PAR reference atlas (wide)
-│   ├── ref_atlas_150_sex_M.tsv.gz  # Male non-PAR chrX+chrY (skipped with --include_sex_chromosomes false)
-│   ├── ref_atlas_500_sex_M.tsv.gz
-│   ├── ref_atlas_150_sex_F.tsv.gz  # Female non-PAR chrX (skipped with --include_sex_chromosomes false)
-│   └── ref_atlas_500_sex_F.tsv.gz
+│   ├── ref_atlas_150.tsv.gz          # Autosomal chr1-22 reference atlas (narrow)
+│   ├── ref_atlas_500.tsv.gz          # Autosomal chr1-22 reference atlas (wide)
+│   ├── ref_atlas_150_male_X.tsv.gz   # Male CTRL chrX atlas
+│   ├── ref_atlas_500_male_X.tsv.gz
+│   ├── ref_atlas_150_female_X.tsv.gz # Female CTRL chrX atlas
+│   ├── ref_atlas_500_female_X.tsv.gz
+│   ├── ref_atlas_150_Y.tsv.gz        # Male CTRL chrY atlas
+│   └── ref_atlas_500_Y.tsv.gz
 ├── cpg_islands/
-│   ├── cpg_signal.bed            # Autosomal + PAR CpG panel
-│   ├── cpg_signal_sex_M.bed      # Male non-PAR CpG panel (autosome-like rules)
-│   └── cpg_signal_sex_F.bed      # Female non-PAR chrX CpG panel (imprinting-style)
+│   ├── cpg_signal.bed                # Autosomal CpG panel
+│   ├── cpg_signal_male_X.bed         # Male chrX-derived CpG panel
+│   └── cpg_signal_Y.bed              # Male chrY-derived CpG panel
 ├── dmr/
 │   └── dmr_{sample}_case.tsv     # DMR results per case sample (with PANEL_SCOPE column by default)
 ├── pipeline_info/
@@ -188,8 +190,8 @@ results/
 | P_FDR | Benjamini-Hochberg adjusted p-value |
 | DIRECTION | `hyper` or `hypo` |
 
-A `PANEL_SCOPE` column (`autosomal` / `sex_M` / `sex_F`) identifies which
-reference branch produced each row. It is omitted when
+A `PANEL_SCOPE` column (`autosomal` / `male_X` / `female_X` / `Y`) identifies
+which reference branch produced each row. It is omitted when
 `--include_sex_chromosomes false` is passed.
 
 ---
@@ -245,7 +247,7 @@ nextflow run main.nf --input samplesheet.csv --dmr_fdr_threshold 0.05
 </details>
 
 <details>
-<summary><strong>Sex Chromosomes (opt-in)</strong></summary>
+<summary><strong>Sex Chromosomes (default)</strong></summary>
 
 Active only when `--include_sex_chromosomes true`. See
 [Sex-chromosome analysis](#sex-chromosome-analysis) for the full workflow.
@@ -255,14 +257,14 @@ Active only when `--include_sex_chromosomes true`. See
 | `include_sex_chromosomes` | true | Enable sex-stratified chrX/chrY analysis (default). Set to `false` for autosomes only |
 | `genome_build` | `GRCh38` | PAR coordinate set (`GRCh38` or `GRCh37`) |
 | `par_bed` | null | Override built-in PAR BED (4-col: CHROM START END NAME) |
-| `sex_atlas_min_controls` | 3 | Minimum male/female CTRL count; branch is skipped below this |
+| `sex_atlas_min_controls` | 3 | Minimum male/female CTRL count required for sex-specific CASE comparisons |
 | `sex_het_threshold_male` | 100 | Non-PAR chrX HET SNP count below → `M` |
 | `sex_het_threshold_female` | 1000 | Non-PAR chrX HET SNP count above → `F` (between → `U`, autosomes only) |
 | `sex_override_tsv` | null | Optional 2-col TSV (`sample_id`, `sex`) to override inference |
-| `sex_f_ref_meth_min` | 0.35 | Female chrX atlas REF_METH lower bound (XCI bimodal ~50%) |
-| `sex_f_ref_meth_max` | 0.65 | Female chrX atlas REF_METH upper bound |
-| `sex_f_diff_threshold` | 0.25 | \|DIFF\| threshold for female non-PAR chrX DMRs (looser than autosomes) |
-| `sex_f_min_sites` | 5 | Minimum CpG sites for female non-PAR chrX DMRs |
+| `sex_f_ref_meth_min` | 0.35 | Deprecated compatibility parameter; inactive in v1.3 |
+| `sex_f_ref_meth_max` | 0.65 | Deprecated compatibility parameter; inactive in v1.3 |
+| `sex_f_diff_threshold` | 0.25 | Deprecated compatibility parameter; inactive in v1.3 |
+| `sex_f_min_sites` | 5 | Deprecated compatibility parameter; inactive in v1.3 |
 
 </details>
 
@@ -295,6 +297,8 @@ Override: `--max_cpus 4 --max_memory '16.GB'`
 
 ### Apptainer (Linux / WSL2) — default
 
+Default image: `oras://ghcr.io/oumarkme/dmrdetector-apptainer:sha-a00657d`
+
 If input files are outside the working directory, bind-mount host paths:
 
 ```bash
@@ -305,6 +309,8 @@ nextflow run main.nf \
 ```
 
 ### Docker (macOS)
+
+Docker profile image: `ghcr.io/oumarkme/dmrdetector:sha-a00657d`
 
 ```bash
 nextflow run main.nf \
@@ -359,35 +365,34 @@ pipeline:
    above `sex_het_threshold_female` → `F`, between → `U` (autosomes only).
    An audit row per sample is written to
    `pipeline_info/sex_inference_summary.tsv`.
-2. **Splits each methylation BED** (`SPLIT_PAR_AUTOSOMAL`) using the
-   built-in PAR coordinates for the chosen `genome_build` (or `--par_bed`).
-   PAR1 / PAR2 rows on chrX/chrY are merged back into the autosomal pool;
-   non-PAR chrX and chrY are routed to sex-specific branches.
-3. **Builds three reference atlases** (`BUILD_ATLAS` + `SMOOTH_ATLAS`):
-   - **autosomal + PAR** — all CTRLs, written as `ref_atlas_{150,500}.tsv.gz`
-     (same filename as toggle-off mode).
-   - **sex_M** — non-PAR chrX+chrY from male CTRLs only.
-   - **sex_F** — non-PAR chrX from female CTRLs only. The female atlas is
-     filtered to `REF_METH ∈ [sex_f_ref_meth_min, sex_f_ref_meth_max]`
-     (default 0.35–0.65) so that downstream comparisons target sites showing
-     the bimodal XCI signature.
-   Branches with fewer than `sex_atlas_min_controls` male/female CTRLs are
-   skipped with a warning.
-4. **Detects CpG panels per scope**: autosomal and `sex_M` use the standard
-   CORE (REF_METH < 10%) + SHORE (REF_METH < 30%) rules; `sex_F` uses an
-   imprinting-style rule (REF_METH within the XCI band) producing
-   `cpg_signal_sex_F.bed`.
-5. **Calls DMRs three times per CASE sample** with scope-specific thresholds:
+2. **Splits each methylation BED** (`SPLIT_SEX_COMPONENTS`) into component
+   scopes: autosomal chr1-22, full chrX, and full chrY. PAR stays with X/Y;
+   the built-in PAR coordinates are used only for VCF-based sex inference.
+3. **Builds four reference atlases** (`BUILD_ATLAS` + `SMOOTH_ATLAS`):
+   - **autosomal** — chr1-22 from all CTRLs, written as
+     `ref_atlas_{150,500}.tsv.gz`.
+   - **male_X** — full chrX from male CTRLs.
+   - **female_X** — full chrX from female CTRLs.
+   - **Y** — full chrY from male CTRLs.
+   If a CASE requires a sex-specific comparison and too few matching CTRLs are
+   available, the pipeline exits with a clear error.
+4. **Detects CpG panels from male-derived atlases only**: autosomal, `male_X`,
+   and `Y` use the standard CORE (REF_METH < 10%) + SHORE
+   (REF_METH < 30%) rules. Female chrX DMRs reuse the `male_X` CpG panel but
+   compare methylation against the `female_X` atlas.
+5. **Calls DMRs against sex-appropriate component atlases**:
 
    | Scope | `diff` threshold | `min_sites` | REF_METH gate |
    |---|---|---|---|
    | `autosomal` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
-   | `sex_M` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
-   | `sex_F` | `sex_f_diff_threshold` (0.25) | `sex_f_min_sites` (5) | `[sex_f_ref_meth_min, sex_f_ref_meth_max]` |
+   | `male_X` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
+   | `female_X` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
+   | `Y` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
 
-   Results from all three scopes are merged per sample by `ANNOTATE_DMRS`,
-   tagged with a `PANEL_SCOPE` column, and published as a single
-   `dmr_{sample}_case.tsv`.
+   Male CASE samples run `autosomal + male_X + Y`; female CASE samples run
+   `autosomal + female_X`; unknown-sex CASE samples run autosomal only with a
+   warning. Results are merged per sample by `ANNOTATE_DMRS`, tagged with a
+   `PANEL_SCOPE` column, and published as a single `dmr_{sample}_case.tsv`.
 
 ### Overriding inferred sex
 

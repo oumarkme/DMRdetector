@@ -52,10 +52,9 @@ def show_help() {
 
     Chromosome coverage:
       --include_sex_chromosomes
-                        Include chrX and chrY in all stages [default: false].
-                        Autosomes (1-22) are always included. Sex chromosomes
-                        require special statistical treatment that this
-                        pipeline does not model.
+                        Include sex-specific chrX/chrY analysis [default: true].
+                        v1.3 builds component atlases for autosomes, male_X,
+                        female_X, and Y. Use false for autosomes only.
 
     Output:
       --outdir          Output directory [default: ./results]
@@ -245,75 +244,53 @@ process INFER_SEX_FROM_VCF {
 }
 
 // ============================================================================
-// Process: SPLIT_PAR_AUTOSOMAL
+// Process: SPLIT_SEX_COMPONENTS
 // ----------------------------------------------------------------------------
-// Splits a preprocessed 5-col methylation BED into three files:
-//   - autosomal + PAR (diploid in both sexes)
-//   - non-PAR chrX   (sex-stratified reference)
-//   - non-PAR chrY   (male-only)
-//   - non-PAR chrX + chrY combined (for male CASE DMR input)
+// Splits a preprocessed 5-col methylation BED into component files:
+//   - autosomal: chr1-22 only
+//   - chrX: full chrX, including PAR
+//   - chrY: full chrY, including PAR
 // Only runs when params.include_sex_chromosomes is true.
 // ============================================================================
 
-process SPLIT_PAR_AUTOSOMAL {
+process SPLIT_SEX_COMPONENTS {
     label 'light'
     tag "${meta.id}"
 
     input:
         tuple val(meta), path(bed)
-        path par_bed
 
     output:
         tuple val(meta),
               path("${meta.id}_autosomal.bed.gz"),
-              path("${meta.id}_nonpar_X.bed.gz"),
-              path("${meta.id}_nonpar_Y.bed.gz"),
-              path("${meta.id}_nonpar_XY.bed.gz")
+              path("${meta.id}_chrX.bed.gz"),
+              path("${meta.id}_chrY.bed.gz")
 
     script:
     """
     #!/bin/bash
     set -euo pipefail
 
-    # Autosomal rows (chr1-22 with optional 'chr' prefix)
+    # Autosomal rows (chr1-22 with optional 'chr' prefix); PAR stays with X/Y.
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?([0-9]+)\$/' \\
-        > autosomal_only.bed
-
-    # PAR rows from chrX/chrY (diploid in both sexes -> treat as autosomal)
-    zcat ${bed} \\
-        | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?[XY]\$/' \\
-        | bedtools intersect -u -a - -b ${par_bed} \\
-        > par_part.bed
-
-    cat autosomal_only.bed par_part.bed \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
         > ${meta.id}_autosomal.bed.gz
 
-    # Non-PAR chrX
+    # Full chrX, including PAR
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?X\$/' \\
-        | bedtools intersect -v -a - -b ${par_bed} \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
-        > ${meta.id}_nonpar_X.bed.gz
+        > ${meta.id}_chrX.bed.gz
 
-    # Non-PAR chrY
+    # Full chrY, including PAR
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?Y\$/' \\
-        | bedtools intersect -v -a - -b ${par_bed} \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
-        > ${meta.id}_nonpar_Y.bed.gz
-
-    # Non-PAR chrX + chrY combined (per-sample input for male DMR calling)
-    zcat ${meta.id}_nonpar_X.bed.gz ${meta.id}_nonpar_Y.bed.gz \\
-        | sort -k1,1 -k2,2n \\
-        | bgzip -@ ${task.cpus} \\
-        > ${meta.id}_nonpar_XY.bed.gz
-
-    rm -f autosomal_only.bed par_part.bed
+        > ${meta.id}_chrY.bed.gz
     """
 }
 
@@ -617,89 +594,6 @@ process DETECT_CPG_ISLANDS {
     """
 }
 
-// ============================================================================
-// Process: DETECT_CPG_ISLANDS_SEX_F
-// ----------------------------------------------------------------------------
-// Imprinting-style island detection on a female-only non-PAR chrX atlas.
-// X-chromosome inactivation collapses into a ~50% combined-strand signal
-// (Xa ~0% + Xi ~100%). We therefore look for CpG-dense regions whose REF_METH
-// sits in the XCI-bimodal band (default [0.35, 0.65]), not the classic
-// hypomethylated (<10%) band used on autosomes.
-// ============================================================================
-
-process DETECT_CPG_ISLANDS_SEX_F {
-    label 'medium'
-    tag 'sex_F'
-
-    input:
-        path ref_atlas
-
-    output:
-        tuple val('sex_F'), path("cpg_signal_sex_F.bed"), emit: cpg_bed
-
-    script:
-    """
-    #!/usr/bin/env Rscript
-    suppressPackageStartupMessages(library(data.table))
-    setDTthreads(${task.cpus})
-
-    cat("=== Detect XCI-band CpG Islands (female non-PAR chrX) ===\\n")
-
-    # Parameters
-    min_samples   <- ${params.cpg_min_samples_per_site}
-    core_min_meth <- ${params.sex_f_ref_meth_min}
-    core_max_meth <- ${params.sex_f_ref_meth_max}
-    max_gap       <- ${params.cpg_max_gap_distance}
-    min_length    <- ${params.cpg_min_island_length}
-
-    write_empty <- function() {
-        fwrite(data.table(CHROM=character(), START=integer(), END=integer(),
-                          START_EXTEND=integer(), END_EXTEND=integer(),
-                          LENGTH=integer(), NUM_CPG=integer()),
-               "cpg_signal_sex_F.bed", sep="\\t", col.names=TRUE)
-    }
-
-    ref_atlas <- fread("${ref_atlas}")
-    ref_atlas[, CHROM := as.character(CHROM)]
-    cat("  Loaded", nrow(ref_atlas), "sites\\n")
-
-    ref_atlas <- ref_atlas[N > min_samples]
-    cat("  After N >", min_samples, "filter:", nrow(ref_atlas), "sites\\n")
-
-    # CORE: REF_METH in the XCI-bimodal band. PHI is not restricted because
-    # mosaic XCI inherently produces higher between-sample variance.
-    ref_atlas[, CORE := REF_METH >= core_min_meth & REF_METH <= core_max_meth]
-    n_core <- sum(ref_atlas\$CORE)
-    cat(sprintf("  CORE sites (REF_METH in [%.2f, %.2f]): %d\\n",
-                core_min_meth, core_max_meth, n_core))
-    if (n_core == 0) { write_empty(); quit(save="no") }
-
-    # Cluster neighbouring CORE sites into islands
-    ref_atlas[CORE == TRUE, island_id := {
-        d <- START - shift(START, fill = START[1])
-        cumsum(d > max_gap)
-    }, by = CHROM]
-
-    island_stats <- ref_atlas[CORE == TRUE, .(
-        START = min(START), END = max(START), NUM_CPG = .N
-    ), by = .(CHROM, island_id)]
-    island_stats[, LENGTH := END - START + 1]
-    island_stats <- island_stats[LENGTH >= min_length & (NUM_CPG * 100 >= LENGTH)]
-    cat("  Islands after filtering:", nrow(island_stats), "\\n")
-    if (nrow(island_stats) == 0) { write_empty(); quit(save="no") }
-
-    # No SHORE extension for imprinting-style detection — the bimodal band is
-    # already wider than the classic CORE<10% definition.
-    island_stats[, `:=`(START_EXTEND = START, END_EXTEND = END)]
-
-    result <- island_stats[, .(CHROM, START, END, START_EXTEND, END_EXTEND, LENGTH, NUM_CPG)]
-    result <- result[order(CHROM, START)]
-    fwrite(result, "cpg_signal_sex_F.bed", sep = "\\t", col.names = TRUE)
-    cat("Total XCI-band islands:", nrow(result), "\\n")
-    """
-}
-
-// ============================================================================
 // Process: PARSE_GTF
 // ----------------------------------------------------------------------------
 // Runs once per pipeline. Parses the Ensembl GTF into a slim gene-annotation
@@ -723,8 +617,16 @@ process PARSE_GTF {
     setDTthreads(${task.cpus})
 
     include_sex <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
-    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
-    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+    normalize_primary_chrom <- function(x) {
+        chrom <- as.character(x)
+        base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
+        primary <- base %in% c(as.character(1:22), "X", "Y")
+        chrom[primary] <- paste0("chr", base[primary])
+        chrom
+    }
+
+    allowed_chroms <- paste0("chr", 1:22)
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "chrX", "chrY")
 
     message("Parsing GTF...")
     gtf <- fread(cmd = sprintf("zcat %s | grep -v '^#'", "${gtf_file}"),
@@ -732,7 +634,7 @@ process PARSE_GTF {
                  col.names = c("CHROM","source","feature","start","end",
                                "score","strand","frame","attributes"))
     gtf <- gtf[feature == "gene"]
-    gtf[, CHROM := as.character(CHROM)]
+    gtf[, CHROM := normalize_primary_chrom(CHROM)]
     gtf <- gtf[CHROM %in% allowed_chroms]
     gtf[, gene_name := sub('.*gene_name "([^"]+)".*', "\\\\1", attributes)]
     gtf[, gene_biotype := sub('.*gene_biotype "([^"]+)".*', "\\\\1", attributes)]
@@ -871,8 +773,8 @@ process CALL_DMR {
                        select = c("CHROM", "START", "END", "REF_METH", "REF_VAR"))
     ref_atlas[, CHROM := as.character(CHROM)]
     ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
-    # Restrict atlas to the expected REF_METH band (sex_F uses [0.35, 0.65] to
-    # compare only against XCI-bimodal sites; autosomal/sex_M use [0, 1] = no-op)
+    # Restrict atlas to the expected REF_METH band. v1.3 component scopes use
+    # [0, 1] by default; the bounds are retained for compatibility.
     ref_atlas <- ref_atlas[REF_METH >= ref_meth_min & REF_METH <= ref_meth_max]
     message(sprintf("  Atlas after REF_METH filter: %d sites", nrow(ref_atlas)))
 
@@ -908,12 +810,13 @@ process CALL_DMR {
     }
 
     # ---- Panel2 (optional): merge within each region separately ----
-    # Only applied to the autosomal scope — sex branches don't use panel2.
+    # ICR/panel2 analysis is autosomal only in v1.3; X/Y panel rows are dropped.
     if (run_panel2) {
         message("Processing panel2...")
         panel2_dt <- fread("${panel2}", header = FALSE, col.names = c("CHROM", "START", "END"))
         panel2_dt[, CHROM := as.character(CHROM)]
-        panel2_dt <- panel2_dt[CHROM %in% allowed_chroms]
+        panel2_allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
+        panel2_dt <- panel2_dt[CHROM %in% panel2_allowed_chroms]
         p2_sites    <- find_sites_in_regions(merged, panel2_dt, "START", "END")
         p2_filtered <- p2_sites[abs(DIFF) > panel2_diff_threshold]
 
@@ -999,6 +902,14 @@ process ANNOTATE_DMRS {
     message(sprintf("Annotating DMRs for %s (%s) | include_sex=%s",
                     "${meta.id}", "${meta.type}", include_sex))
 
+    normalize_primary_chrom <- function(x) {
+        chrom <- as.character(x)
+        base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
+        primary <- base %in% c(as.character(1:22), "X", "Y")
+        chrom[primary] <- paste0("chr", base[primary])
+        chrom
+    }
+
     # Each staged file is dmr_raw_<id>_<type>_<scope>.tsv.gz; gather them all
     raw_files <- list.files(".",
         pattern = "^dmr_raw_${meta.id}_${meta.type}_.*\\\\.tsv\\\\.gz\$",
@@ -1012,10 +923,10 @@ process ANNOTATE_DMRS {
 
     dmr_list <- lapply(raw_files, fread)
     dmrs <- rbindlist(dmr_list, use.names = TRUE, fill = TRUE)
-    if (nrow(dmrs) > 0) dmrs[, CHROM := as.character(CHROM)]
+    if (nrow(dmrs) > 0) dmrs[, CHROM := normalize_primary_chrom(CHROM)]
 
     gtf <- fread("${gene_annot}")
-    gtf[, CHROM := as.character(CHROM)]
+    gtf[, CHROM := normalize_primary_chrom(CHROM)]
 
     annotate_genes <- function(regions, gtf) {
         if (nrow(regions) == 0) { regions[, GENE := character()]; return(regions) }
@@ -1197,7 +1108,8 @@ workflow {
     // CASE bed channel (input to CALL_DMR).
     //
     //   Autosomal-only (toggle off): 1 scope.
-    //   Sex-stratified (toggle on):  3 scopes = autosomal, sex_M, sex_F.
+    //   Sex-stratified (toggle on):  component scopes = autosomal,
+    //   male_X, female_X, and Y.
     // ====================================================================
     if (use_sex_branches) {
         def par_bed_file = params.par_bed
@@ -1238,54 +1150,77 @@ workflow {
 
         // Join sex info into the preprocessed channel (meta gains sex fields)
         ch_preprocessed_with_sex = ch_all_preprocessed
-            .map { meta, bed -> [meta.id, bed] }
-            .combine(ch_sex_by_id, by: 0)
-            .map { _id, bed, meta_with_sex -> [meta_with_sex, bed] }
+            .map { meta, bed -> [meta.id, meta, bed] }
+            .join(ch_sex_by_id)
+            .map { row ->
+                def meta_with_sex = row.find { it instanceof Map && it.containsKey('sex') }
+                def bed = row.find { !(it instanceof Map) && it.toString().endsWith('_filtered.bed.gz') }
+                if (!meta_with_sex) {
+                    error "ERROR: failed to attach sex metadata for preprocessed sample ${row[0]}"
+                }
+                if (!bed) {
+                    error "ERROR: failed to attach preprocessed BED for sample ${row[0]}"
+                }
+                [meta_with_sex, bed]
+            }
 
-        // Split each preprocessed BED into autosomal+PAR / non-PAR X / Y / XY
-        ch_split = SPLIT_PAR_AUTOSOMAL(ch_preprocessed_with_sex, ch_par_bed)
+        // Split each preprocessed BED into chr1-22 / full chrX / full chrY.
+        ch_split = SPLIT_SEX_COMPONENTS(ch_preprocessed_with_sex)
 
         // ---- Per-scope CTRL beds for atlas building ----
         ch_ctrl_autosomal = ch_split
-            .filter { meta, _a, _x, _y, _xy -> meta.type == 'ctrl' }
-            .map    { _meta, a, _x, _y, _xy -> a }
+            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' }
+            .map    { _meta, a, _x, _y -> a }
             .collect()
             .map    { beds -> ['autosomal', beds] }
 
-        ch_ctrl_sex_M = ch_split
-            .filter { meta, _a, _x, _y, _xy -> meta.type == 'ctrl' && meta.sex == 'M' }
-            .map    { _meta, _a, _x, _y, xy -> xy }
+        ch_ctrl_male_X = ch_split
+            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' && meta.sex == 'M' }
+            .map    { _meta, _a, x, _y -> x }
             .collect()
             .filter { beds -> beds.size() >= (params.sex_atlas_min_controls as int) }
-            .map    { beds -> ['sex_M', beds] }
+            .map    { beds -> ['male_X', beds] }
 
-        ch_ctrl_sex_F = ch_split
-            .filter { meta, _a, _x, _y, _xy -> meta.type == 'ctrl' && meta.sex == 'F' }
-            .map    { _meta, _a, x, _y, _xy -> x }
+        ch_ctrl_female_X = ch_split
+            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' && meta.sex == 'F' }
+            .map    { _meta, _a, x, _y -> x }
             .collect()
             .filter { beds -> beds.size() >= (params.sex_atlas_min_controls as int) }
-            .map    { beds -> ['sex_F', beds] }
+            .map    { beds -> ['female_X', beds] }
+
+        ch_ctrl_Y = ch_split
+            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' && meta.sex == 'M' }
+            .map    { _meta, _a, _x, y -> y }
+            .collect()
+            .filter { beds -> beds.size() >= (params.sex_atlas_min_controls as int) }
+            .map    { beds -> ['Y', beds] }
 
         ch_build_atlas_input = ch_ctrl_autosomal
-            .mix(ch_ctrl_sex_M)
-            .mix(ch_ctrl_sex_F)
+            .mix(ch_ctrl_male_X)
+            .mix(ch_ctrl_female_X)
+            .mix(ch_ctrl_Y)
 
         // ---- Per-scope CASE beds for CALL_DMR ----
         ch_case_autosomal = ch_split
-            .filter { meta, _a, _x, _y, _xy -> meta.type == 'case' }
-            .map    { meta, a, _x, _y, _xy -> ['autosomal', meta, a] }
+            .filter { meta, _a, _x, _y -> meta.type == 'case' }
+            .map    { meta, a, _x, _y -> ['autosomal', meta, a] }
 
-        ch_case_sex_M = ch_split
-            .filter { meta, _a, _x, _y, _xy -> meta.type == 'case' && meta.sex == 'M' }
-            .map    { meta, _a, _x, _y, xy -> ['sex_M', meta, xy] }
+        ch_case_male_X = ch_split
+            .filter { meta, _a, _x, _y -> meta.type == 'case' && meta.sex == 'M' }
+            .map    { meta, _a, x, _y -> ['male_X', meta, x] }
 
-        ch_case_sex_F = ch_split
-            .filter { meta, _a, _x, _y, _xy -> meta.type == 'case' && meta.sex == 'F' }
-            .map    { meta, _a, x, _y, _xy -> ['sex_F', meta, x] }
+        ch_case_Y = ch_split
+            .filter { meta, _a, _x, _y -> meta.type == 'case' && meta.sex == 'M' }
+            .map    { meta, _a, _x, y -> ['Y', meta, y] }
+
+        ch_case_female_X = ch_split
+            .filter { meta, _a, _x, _y -> meta.type == 'case' && meta.sex == 'F' }
+            .map    { meta, _a, x, _y -> ['female_X', meta, x] }
 
         ch_case_scopes = ch_case_autosomal
-            .mix(ch_case_sex_M)
-            .mix(ch_case_sex_F)
+            .mix(ch_case_male_X)
+            .mix(ch_case_female_X)
+            .mix(ch_case_Y)
 
         // Persist per-sample sex inference reports for review
         INFER_SEX_FROM_VCF.out.report
@@ -1325,19 +1260,19 @@ workflow {
             .filter { _scope, sigma, _f -> (sigma as int) == (params.smooth_sigma_narrow as int) }
             .map    { scope, _sigma, f -> [scope, f] }
 
-        // Autosomal & sex_M share the autosome-rules CpG detector; sex_F uses
-        // the imprinting-style detector (REF_METH in the XCI-bimodal band).
-        ch_cpg_auto_like_in = ch_narrow_atlas_by_scope
-            .filter { scope, _f -> scope in ['autosomal', 'sex_M'] }
-        ch_cpg_sex_F_in = ch_narrow_atlas_by_scope
-            .filter { scope, _f -> scope == 'sex_F' }
-            .map    { _scope, f -> f }
+        // v1.3 uses male-derived CpG island panels only. female_X DMRs reuse
+        // the male_X CpG panel but compare against the female_X atlas.
+        ch_cpg_male_derived_in = ch_narrow_atlas_by_scope
+            .filter { scope, _f -> scope in ['autosomal', 'male_X', 'Y'] }
 
-        ch_cpg_auto_like_out = DETECT_CPG_ISLANDS(ch_cpg_auto_like_in)
-        ch_cpg_sex_F_out     = DETECT_CPG_ISLANDS_SEX_F(ch_cpg_sex_F_in)
+        ch_cpg_male_derived_out = DETECT_CPG_ISLANDS(ch_cpg_male_derived_in)
 
-        ch_cpg_panels_by_scope = ch_cpg_auto_like_out.cpg_bed
-            .mix(ch_cpg_sex_F_out.cpg_bed)
+        ch_cpg_panels_by_scope = ch_cpg_male_derived_out.cpg_bed
+            .mix(
+                ch_cpg_male_derived_out.cpg_bed
+                    .filter { scope, _f -> scope == 'male_X' }
+                    .map    { _scope, f -> ['female_X', f] }
+            )
     } else {
         // Skip mode: user-provided references (autosomal only).
         ch_narrow_atlas_by_scope = channel.of(
@@ -1358,18 +1293,18 @@ workflow {
         .combine(ch_refs_by_scope, by: 0)
         // (scope, meta, sample_bed, atlas, panel)
         .map { scope, meta, bed, atlas, panel ->
-            def diff_thresh = scope == 'sex_F' ? params.sex_f_diff_threshold : params.dmr_cpg_diff_threshold
-            def min_sites   = scope == 'sex_F' ? params.sex_f_min_sites      : params.dmr_cpg_min_sites
-            def ref_min     = scope == 'sex_F' ? params.sex_f_ref_meth_min   : 0.0
-            def ref_max     = scope == 'sex_F' ? params.sex_f_ref_meth_max   : 1.0
+            def diff_thresh = params.dmr_cpg_diff_threshold
+            def min_sites   = params.dmr_cpg_min_sites
+            def ref_min     = 0.0
+            def ref_max     = 1.0
             [meta, bed, atlas, panel, scope, diff_thresh, min_sites, ref_min, ref_max]
         }
 
     ch_dmr_raw = CALL_DMR(ch_dmr_input, ch_panel2)
 
-    // Group 1-3 raw DMR files per sample, then annotate in one pass.
+    // Group raw component-scope DMR files per sample, then annotate in one pass.
     // meta is stable across scopes for a given sample, so groupTuple on the
-    // first slot (meta) correctly merges autosomal + sex_M/F records.
+    // first slot (meta) correctly merges autosomal + X/Y records.
     ch_dmr_grouped = ch_dmr_raw.groupTuple()
 
     ANNOTATE_DMRS(ch_dmr_grouped, ch_gene_annot)

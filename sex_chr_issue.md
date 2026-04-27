@@ -1,5 +1,12 @@
 # Sex-Chromosome Analysis in DMRdetector
 
+> **v1.3 note:** This document records the original v1.2 sex-chromosome
+> implementation. It has been superseded by the v1.3 component-scope model:
+> `autosomal`, `male_X`, `female_X`, and `Y`. In v1.3 PAR remains with X/Y
+> during methylation analysis, CpG island detection uses male-derived scopes,
+> female chrX DMRs compare against the `female_X` atlas, and ICR/panel2
+> analysis is autosomal only.
+
 ## Problem
 
 Before this change, DMRdetector analysed autosomes only. Sex chromosomes
