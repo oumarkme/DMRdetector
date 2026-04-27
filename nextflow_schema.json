@@ -202,8 +202,69 @@
       "properties": {
         "include_sex_chromosomes": {
           "type": "boolean",
-          "default": false,
-          "description": "Include X and Y chromosomes in atlas building, CpG-island detection, and DMR detection. Default: false (autosomes only). Sex chromosomes require special statistical treatment (ploidy, X-inactivation) that this pipeline does not model."
+          "default": true,
+          "description": "Enable sex-stratified chrX/chrY analysis: infer sex from VCF, split PAR (treated as autosomal) from non-PAR, build male and female references for non-PAR regions, and call DMRs per scope. Set to false to restrict analysis to autosomes only."
+        },
+        "genome_build": {
+          "type": "string",
+          "default": "GRCh38",
+          "enum": ["GRCh38", "GRCh37"],
+          "description": "Genome build used to select built-in PAR coordinates."
+        },
+        "par_bed": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Override built-in PAR BED (4-col: CHROM START END NAME). Must cover both 'chrX/chrY' and 'X/Y' contig naming."
+        },
+        "sex_atlas_min_controls": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "description": "Minimum male or female CTRL count. Branches with fewer controls are skipped."
+        },
+        "sex_het_threshold_male": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 0,
+          "description": "Non-PAR chrX HET SNP count below this threshold classifies the sample as male (hemizygous)."
+        },
+        "sex_het_threshold_female": {
+          "type": "integer",
+          "default": 1000,
+          "minimum": 0,
+          "description": "Non-PAR chrX HET SNP count above this threshold classifies the sample as female (diploid). Counts between male and female thresholds are classified as U (autosomes only)."
+        },
+        "sex_override_tsv": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Optional 2-column TSV (sample_id, sex) to override VCF-based sex inference (useful for aneuploid karyotypes)."
+        },
+        "sex_f_ref_meth_min": {
+          "type": "number",
+          "default": 0.35,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Lower bound on REF_METH for female non-PAR chrX atlas and DMR calls (targets the bimodal XCI signature ~50%)."
+        },
+        "sex_f_ref_meth_max": {
+          "type": "number",
+          "default": 0.65,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Upper bound on REF_METH for female non-PAR chrX atlas and DMR calls."
+        },
+        "sex_f_diff_threshold": {
+          "type": "number",
+          "default": 0.25,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "|DIFF| threshold for female non-PAR chrX DMRs (looser than autosomal because XCI skew is continuous)."
+        },
+        "sex_f_min_sites": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "description": "Minimum CpG sites per DMR for female non-PAR chrX."
         }
       }
     },

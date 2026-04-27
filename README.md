@@ -40,10 +40,12 @@ CTRL + CASE samples
         └─ ANNOTATE_DMRS   (per case)  nearest-gene overlap, final TSV
 ```
 
-Autosomes (1-22) are always analysed. Sex chromosomes (X, Y) are excluded by
-default because they require special statistical treatment (ploidy,
-X-inactivation) that this pipeline does not model. Use
-`--include_sex_chromosomes true` to opt in.
+Autosomes (1-22) are always analysed. Sex chromosomes (X, Y) are handled by
+a sex-stratified workflow that runs by **default**: the pipeline infers
+sample sex from the VCF, splits PAR (treated as autosomal) from non-PAR,
+and builds male- and female-specific references for non-PAR chrX/chrY. Pass
+`--include_sex_chromosomes false` to restrict the run to autosomes only.
+See [Sex-chromosome analysis](#sex-chromosome-analysis) below.
 
 ### Usage Scenarios
 
@@ -152,12 +154,21 @@ nextflow run main.nf \
 ```
 results/
 ├── atlas/
-│   ├── ref_atlas_150.tsv.gz      # Smoothed reference atlas (narrow bandwidth)
-│   └── ref_atlas_500.tsv.gz      # Smoothed reference atlas (wide bandwidth)
+│   ├── ref_atlas_150.tsv.gz      # Autosomal + PAR reference atlas (narrow)
+│   ├── ref_atlas_500.tsv.gz      # Autosomal + PAR reference atlas (wide)
+│   ├── ref_atlas_150_sex_M.tsv.gz  # Male non-PAR chrX+chrY (skipped with --include_sex_chromosomes false)
+│   ├── ref_atlas_500_sex_M.tsv.gz
+│   ├── ref_atlas_150_sex_F.tsv.gz  # Female non-PAR chrX (skipped with --include_sex_chromosomes false)
+│   └── ref_atlas_500_sex_F.tsv.gz
 ├── cpg_islands/
-│   └── cpg_signal.bed            # CpG island panel
+│   ├── cpg_signal.bed            # Autosomal + PAR CpG panel
+│   ├── cpg_signal_sex_M.bed      # Male non-PAR CpG panel (autosome-like rules)
+│   └── cpg_signal_sex_F.bed      # Female non-PAR chrX CpG panel (imprinting-style)
 ├── dmr/
-│   └── dmr_{sample}_case.tsv     # DMR results per case sample
+│   └── dmr_{sample}_case.tsv     # DMR results per case sample (with PANEL_SCOPE column by default)
+├── pipeline_info/
+│   ├── sex_inference/            # Per-sample VCF-based sex inference reports
+│   └── sex_inference_summary.tsv # Combined sex inference summary
 └── nf_report.html                # Nextflow execution report
 ```
 
@@ -176,6 +187,10 @@ results/
 | P_VALUE | T-test p-value |
 | P_FDR | Benjamini-Hochberg adjusted p-value |
 | DIRECTION | `hyper` or `hypo` |
+
+A `PANEL_SCOPE` column (`autosomal` / `sex_M` / `sex_F`) identifies which
+reference branch produced each row. It is omitted when
+`--include_sex_chromosomes false` is passed.
 
 ---
 
@@ -226,7 +241,28 @@ nextflow run main.nf --input samplesheet.csv --dmr_fdr_threshold 0.05
 | `dmr_cpg_min_sites` | 30 | Min CpG sites for CpG panel |
 | `panel2_diff_threshold` | 0.25 | \|DIFF\| threshold for panel2 |
 | `panel2_min_sites` | 5 | Min CpG sites for panel2 |
-| `include_sex_chromosomes` | false | Include chrX/chrY in atlas, CpG panel, and DMR detection |
+
+</details>
+
+<details>
+<summary><strong>Sex Chromosomes (opt-in)</strong></summary>
+
+Active only when `--include_sex_chromosomes true`. See
+[Sex-chromosome analysis](#sex-chromosome-analysis) for the full workflow.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `include_sex_chromosomes` | true | Enable sex-stratified chrX/chrY analysis (default). Set to `false` for autosomes only |
+| `genome_build` | `GRCh38` | PAR coordinate set (`GRCh38` or `GRCh37`) |
+| `par_bed` | null | Override built-in PAR BED (4-col: CHROM START END NAME) |
+| `sex_atlas_min_controls` | 3 | Minimum male/female CTRL count; branch is skipped below this |
+| `sex_het_threshold_male` | 100 | Non-PAR chrX HET SNP count below → `M` |
+| `sex_het_threshold_female` | 1000 | Non-PAR chrX HET SNP count above → `F` (between → `U`, autosomes only) |
+| `sex_override_tsv` | null | Optional 2-col TSV (`sample_id`, `sex`) to override inference |
+| `sex_f_ref_meth_min` | 0.35 | Female chrX atlas REF_METH lower bound (XCI bimodal ~50%) |
+| `sex_f_ref_meth_max` | 0.65 | Female chrX atlas REF_METH upper bound |
+| `sex_f_diff_threshold` | 0.25 | \|DIFF\| threshold for female non-PAR chrX DMRs (looser than autosomes) |
+| `sex_f_min_sites` | 5 | Minimum CpG sites for female non-PAR chrX DMRs |
 
 </details>
 
@@ -307,6 +343,82 @@ nextflow run main.nf [same options] -resume
 |---------|-------------|
 | `test` | Reduced resources (4 CPUs, 16 GB) for CI/testing |
 | `docker` | Use Docker instead of Apptainer (required for macOS) |
+
+---
+
+## Sex-chromosome analysis
+
+Sex-stratified analysis of chrX/chrY runs by default. Pass
+`--include_sex_chromosomes false` to disable it (see
+[Autosomes-only mode](#autosomes-only-mode) below). In the default path the
+pipeline:
+
+1. **Infers sex from the VCF** (`INFER_SEX_FROM_VCF`) by counting heterozygous
+   SNPs on non-PAR chrX. Males are hemizygous (HET ≈ 0); females are diploid
+   (HET in the thousands). Counts below `sex_het_threshold_male` → `M`,
+   above `sex_het_threshold_female` → `F`, between → `U` (autosomes only).
+   An audit row per sample is written to
+   `pipeline_info/sex_inference_summary.tsv`.
+2. **Splits each methylation BED** (`SPLIT_PAR_AUTOSOMAL`) using the
+   built-in PAR coordinates for the chosen `genome_build` (or `--par_bed`).
+   PAR1 / PAR2 rows on chrX/chrY are merged back into the autosomal pool;
+   non-PAR chrX and chrY are routed to sex-specific branches.
+3. **Builds three reference atlases** (`BUILD_ATLAS` + `SMOOTH_ATLAS`):
+   - **autosomal + PAR** — all CTRLs, written as `ref_atlas_{150,500}.tsv.gz`
+     (same filename as toggle-off mode).
+   - **sex_M** — non-PAR chrX+chrY from male CTRLs only.
+   - **sex_F** — non-PAR chrX from female CTRLs only. The female atlas is
+     filtered to `REF_METH ∈ [sex_f_ref_meth_min, sex_f_ref_meth_max]`
+     (default 0.35–0.65) so that downstream comparisons target sites showing
+     the bimodal XCI signature.
+   Branches with fewer than `sex_atlas_min_controls` male/female CTRLs are
+   skipped with a warning.
+4. **Detects CpG panels per scope**: autosomal and `sex_M` use the standard
+   CORE (REF_METH < 10%) + SHORE (REF_METH < 30%) rules; `sex_F` uses an
+   imprinting-style rule (REF_METH within the XCI band) producing
+   `cpg_signal_sex_F.bed`.
+5. **Calls DMRs three times per CASE sample** with scope-specific thresholds:
+
+   | Scope | `diff` threshold | `min_sites` | REF_METH gate |
+   |---|---|---|---|
+   | `autosomal` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
+   | `sex_M` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
+   | `sex_F` | `sex_f_diff_threshold` (0.25) | `sex_f_min_sites` (5) | `[sex_f_ref_meth_min, sex_f_ref_meth_max]` |
+
+   Results from all three scopes are merged per sample by `ANNOTATE_DMRS`,
+   tagged with a `PANEL_SCOPE` column, and published as a single
+   `dmr_{sample}_case.tsv`.
+
+### Overriding inferred sex
+
+If a sample has an aneuploid karyotype (Turner 45,X, Klinefelter 47,XXY,
+etc.) or clinical records that supersede the VCF inference, pass a 2-column
+TSV:
+
+```tsv
+sample_id	sex
+ONT042	F
+ONT098	M
+```
+
+```bash
+nextflow run main.nf \
+    --input samplesheet.csv \
+    --include_sex_chromosomes true \
+    --sex_override_tsv sex_calls.tsv \
+    --outdir results
+```
+
+Overrides are applied after inference; the audit summary records the source
+(`inferred` vs. `override`).
+
+### Autosomes-only mode
+
+Pass `--include_sex_chromosomes false` to opt out of the sex-stratified
+workflow. Only the autosomal branch runs, no sex inference is performed,
+and outputs match the pre-feature layout: `ref_atlas_{150,500}.tsv.gz`,
+`cpg_signal.bed`, and `dmr_{sample}_case.tsv` without a `PANEL_SCOPE`
+column.
 
 ---
 

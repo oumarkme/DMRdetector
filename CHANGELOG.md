@@ -3,6 +3,63 @@
 All notable changes to this project will be documented in this file.
 
 
+## [Unreleased]
+
+### Added
+
+- Sex-stratified chrX/chrY analysis, enabled by default
+  (`include_sex_chromosomes = true`; pass `--include_sex_chromosomes false`
+  to opt out). The pipeline now:
+  - Infers sample sex from the VCF by counting non-PAR chrX heterozygous
+    SNPs (`INFER_SEX_FROM_VCF`); per-sample reports and a combined
+    `pipeline_info/sex_inference_summary.tsv` are published.
+  - Splits each methylation BED into autosomal + PAR / non-PAR chrX /
+    non-PAR chrY streams (`SPLIT_PAR_AUTOSOMAL`) using built-in PAR
+    coordinates for GRCh38 or GRCh37 (`assets/par_GRCh38.bed`,
+    `assets/par_GRCh37.bed`; override with `--par_bed`).
+  - Builds three reference atlases in one pass (scope-tagged channels into
+    a single `BUILD_ATLAS` + `SMOOTH_ATLAS`): autosomal + PAR, male non-PAR
+    chrX+chrY, and female non-PAR chrX. Outputs are suffixed with
+    `_sex_M` / `_sex_F`.
+  - Detects CpG panels per scope, with a dedicated
+    `DETECT_CPG_ISLANDS_SEX_F` that applies an imprinting-style rule
+    (REF_METH within the XCI band) for female chrX.
+  - Calls DMRs three times per CASE sample with scope-specific thresholds
+    (autosomal / sex_M use the standard CpG-panel thresholds; sex_F uses
+    `sex_f_diff_threshold` 0.25, `sex_f_min_sites` 5, and a REF_METH gate
+    of `[sex_f_ref_meth_min, sex_f_ref_meth_max]`). Results from all scopes
+    are merged by `ANNOTATE_DMRS` and tagged with a `PANEL_SCOPE` column.
+- New parameters: `genome_build`, `par_bed`, `sex_atlas_min_controls`,
+  `sex_het_threshold_male`, `sex_het_threshold_female`, `sex_override_tsv`,
+  `sex_f_ref_meth_min`, `sex_f_ref_meth_max`, `sex_f_diff_threshold`,
+  `sex_f_min_sites`.
+- Smoke test now covers `--include_sex_chromosomes true` via
+  `test/smoke/sex_override.tsv`, asserting all three atlases exist,
+  PAR/non-PAR separation is correct, the three CpG panels are produced,
+  the DMR TSV carries `PANEL_SCOPE`, and `sex_inference_summary.tsv`
+  reports all samples.
+
+### Changed
+
+- `include_sex_chromosomes` default flipped to `true`. Existing cohorts that
+  lack VCFs, have fewer than `sex_atlas_min_controls` male/female controls,
+  or should stay on the legacy autosomes-only path must now pass
+  `--include_sex_chromosomes false` explicitly.
+- `BUILD_ATLAS`, `SMOOTH_ATLAS`, and `DETECT_CPG_ISLANDS` now accept a
+  scope-tagged tuple (`autosomal` / `sex_M` / `sex_F`) so a single process
+  definition serves both autosomes-only and sex-stratified modes.
+- `ANNOTATE_DMRS` now groups raw per-scope DMR files by sample and emits
+  the `PANEL_SCOPE` column only when sex branches are active (autosomes-only
+  output remains byte-identical with pre-feature releases).
+
+### Fixed
+
+- `CALL_DMR` emitted a phantom NA row when a scope produced zero DMRs,
+  which later broke `ANNOTATE_DMRS` (`foverlaps` rejected the NA start).
+  Empty-result files are now written as header-only with the canonical
+  schema.
+
+
 ## [1.1] - 2026-04-21
 
 Publication-ready release accompanying the manuscript *"Quick detection of
