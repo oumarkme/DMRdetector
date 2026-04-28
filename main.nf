@@ -55,7 +55,7 @@ def show_help() {
     Chromosome coverage:
       --include_sex_chromosomes
                         Include sex-specific chrX/chrY analysis [default: true].
-                        v2.0 builds component atlases for autosomes, non-PAR
+                        Builds component atlases for autosomes, non-PAR
                         male_X, non-PAR female_X, and Y. Use false for
                         autosomes only.
 
@@ -812,7 +812,7 @@ process CALL_DMR {
                        select = c("CHROM", "START", "END", "REF_METH", "REF_VAR"))
     ref_atlas[, CHROM := normalize_primary_chrom(CHROM)]
     ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
-    # Restrict atlas to the expected REF_METH band. v2.0 component scopes use
+    # Restrict atlas to the expected REF_METH band. Component scopes use
     # [0, 1] for DMR calling by default; female_X island selection happens
     # upstream in DETECT_CPG_ISLANDS.
     ref_atlas <- ref_atlas[REF_METH >= ref_meth_min & REF_METH <= ref_meth_max]
@@ -1121,11 +1121,12 @@ workflow {
 
     // Execution mode flags
     def build_atlas_mode = !params.ref_atlas
-    def use_sex_branches = params.include_sex_chromosomes && build_atlas_mode
+    def has_sex_atlases  = params.ref_atlas_male_X && params.ref_atlas_female_X && params.ref_atlas_Y
+    def use_sex_branches = params.include_sex_chromosomes && (build_atlas_mode || has_sex_atlases)
 
-    if (params.include_sex_chromosomes && !build_atlas_mode) {
-        log.warn "include_sex_chromosomes=true but --ref_atlas is provided. " +
-                 "Sex-stratified atlases require CTRL samples; falling back to autosomal-only DMR calling."
+    if (params.include_sex_chromosomes && !build_atlas_mode && !has_sex_atlases) {
+        log.warn "include_sex_chromosomes=true but --ref_atlas is provided without " +
+                 "--ref_atlas_male_X / _female_X / _Y. Falling back to autosomal-only DMR calling."
     }
 
     // Use the lower of the two coverage thresholds so a single
@@ -1240,7 +1241,7 @@ workflow {
             .filter { _scope, sigma, _f -> (sigma as int) == (params.smooth_sigma_narrow as int) }
             .map    { scope, _sigma, f -> [scope, f] }
 
-        // v2.0 builds CpG panels per biological scope. female_X uses a
+        // CpG panels are built per biological scope. female_X uses a
         // hemi-methylated island model inside DETECT_CPG_ISLANDS.
         ch_cpg_panels_by_scope = DETECT_CPG_ISLANDS(ch_narrow_atlas_by_scope).cpg_bed
         if (params.icr_panel) {
@@ -1253,22 +1254,42 @@ workflow {
             ).icr_bed.map { _scope, f -> f }.collect().map { files -> files[0] }
         }
     } else {
-        // Skip mode: user-provided references (autosomal only).
-        ch_narrow_atlas_by_scope = channel.of(
-            ['autosomal', file(params.ref_atlas, checkIfExists: true)]
-        )
-        if (params.cpg_panel) {
-            ch_cpg_panels_by_scope = channel.of(
-                ['autosomal', file(params.cpg_panel, checkIfExists: true)]
-            )
+        // Skip mode: user-provided references.
+        // Build the per-scope atlas channel — autosomal only, or all 4 scopes
+        // when sex-stratified pre-built atlases are supplied.
+        def atlas_entries = [['autosomal', file(params.ref_atlas, checkIfExists: true)]]
+        if (use_sex_branches) {
+            atlas_entries += [
+                ['male_X',   file(params.ref_atlas_male_X,   checkIfExists: true)],
+                ['female_X', file(params.ref_atlas_female_X, checkIfExists: true)],
+                ['Y',        file(params.ref_atlas_Y,        checkIfExists: true)]
+            ]
+        }
+        ch_narrow_atlas_by_scope = channel.of(*atlas_entries)
+
+        // Per-scope CpG panel: prefer user-provided; fall back to detection.
+        def has_sex_cpg = params.cpg_panel_male_X && params.cpg_panel_female_X && params.cpg_panel_Y
+        if (params.cpg_panel && (!use_sex_branches || has_sex_cpg)) {
+            def cpg_entries = [['autosomal', file(params.cpg_panel, checkIfExists: true)]]
+            if (use_sex_branches) {
+                cpg_entries += [
+                    ['male_X',   file(params.cpg_panel_male_X,   checkIfExists: true)],
+                    ['female_X', file(params.cpg_panel_female_X, checkIfExists: true)],
+                    ['Y',        file(params.cpg_panel_Y,        checkIfExists: true)]
+                ]
+            }
+            ch_cpg_panels_by_scope = channel.of(*cpg_entries)
         } else {
             ch_cpg_panels_by_scope = DETECT_CPG_ISLANDS(ch_narrow_atlas_by_scope).cpg_bed
         }
+
         if (params.icr_panel) {
             ch_icr_panel = channel.value(file(params.icr_panel, checkIfExists: true))
         } else {
             ch_icr_panel = DETECT_ICR_REGIONS(
-                ch_narrow_atlas_by_scope.combine(ch_icr_gene_list)
+                ch_narrow_atlas_by_scope
+                    .filter { scope, _f -> scope == 'autosomal' }
+                    .combine(ch_icr_gene_list)
             ).icr_bed.map { _scope, f -> f }.collect().map { files -> files[0] }
         }
     }

@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1] - 2026-04-28
+
+### Added
+- **Single conda environment** (`environment.yml`) bundles Nextflow itself
+  plus every binary and R/Bioconductor package the pipeline invokes. No
+  Docker, Apptainer, or GHCR access required.
+- **`install.sh`** auto-detects `mamba` / `micromamba` / `conda` and creates
+  or updates the `dmrdetector` env in one command.
+- **`bin/check_install.sh`** verifies every CLI tool and R package the
+  pipeline needs and reports failures with exact package names.
+- **CI workflow** (`.github/workflows/ci.yml`) runs env install and the
+  smoke test on every push.
+- **Sex-stratified reference reuse**: new params `--ref_atlas_male_X`,
+  `--ref_atlas_female_X`, `--ref_atlas_Y`, `--cpg_panel_male_X`,
+  `--cpg_panel_female_X`, `--cpg_panel_Y` allow Stages 1+2 to be skipped
+  on rerun while keeping sex-stratified DMR calling intact.
+
+### Changed
+- **Sex is now a required samplesheet column** (`M`/`F`). Routes chrX/chrY
+  beds to the correct scope without VCF-based inference.
+- **Gene annotation switched from GTF parsing to `EnsDb.Hsapiens.v86`**
+  (offline GRCh38 Bioconductor package). Biotype priority (protein_coding
+  → IG/TR → lncRNA → miRNA → … → pseudogenes), overlap-width and
+  gene-length tie-breaks, clean `gene_name → gene_id` fallback.
+- **ICR reference methylation range** widened from `[0.40, 0.60]` to
+  `[0.35, 0.65]` to match the manuscript's 50% ± 15% definition.
+- **`PANEL_SCOPE` column dropped** from the published DMR TSV; scope
+  routing is internal only.
+- README rewritten with manuscript terminology, install / verify
+  instructions, and concrete reference-reuse examples.
+
+### Removed
+- `INFER_SEX_FROM_VCF` process and `sex_het_threshold_male`,
+  `sex_het_threshold_female`, `sex_override_tsv` parameters.
+- `PARSE_GTF`, `DOWNLOAD_GTF` processes; `--gtf` parameter; Ensembl GTF
+  auto-download.
+- Apptainer / Docker support (`process.container`, `apptainer.*`,
+  `apptainer_bind`, `-profile docker`); `Dockerfile`;
+  `test/local_sif.config`; `.github/workflows/docker.yml`.
+
 ## [2.0] - 2026-04-27
 
 ### Changed

@@ -33,12 +33,42 @@
         "ref_atlas": {
           "type": "string",
           "format": "file-path",
-          "description": "Pre-built reference atlas (tsv.gz). Skips Stage 1; CpG islands are detected from this atlas unless cpg_panel is also provided."
+          "description": "Pre-built autosomal reference atlas (tsv.gz). Skips Stage 1; CpG islands are detected from this atlas unless cpg_panel is also provided."
         },
         "cpg_panel": {
           "type": "string",
           "format": "file-path",
-          "description": "Optional pre-built CpG island panel (bed). Overrides atlas-based CpG island detection."
+          "description": "Optional pre-built autosomal CpG island panel (bed). Overrides atlas-based CpG island detection."
+        },
+        "ref_atlas_male_X": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Pre-built male non-PAR chrX reference atlas (tsv.gz). Required together with --ref_atlas_female_X and --ref_atlas_Y for sex-stratified skip mode."
+        },
+        "ref_atlas_female_X": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Pre-built female non-PAR chrX reference atlas (tsv.gz)."
+        },
+        "ref_atlas_Y": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Pre-built chrY reference atlas (tsv.gz)."
+        },
+        "cpg_panel_male_X": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Optional pre-built male non-PAR chrX CpG island panel (bed)."
+        },
+        "cpg_panel_female_X": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Optional pre-built female non-PAR chrX hemi-methylated CpG island panel (bed)."
+        },
+        "cpg_panel_Y": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Optional pre-built chrY CpG island panel (bed)."
         }
       }
     },
@@ -217,7 +247,7 @@
         "include_sex_chromosomes": {
           "type": "boolean",
           "default": true,
-          "description": "Enable v2.0 ploidy-aware and X-inactivation-aware sex chromosome analysis: infer sex from VCF, build autosomal, non-PAR male_X, non-PAR female_X, and Y component references, and call DMRs against sex-appropriate components. Set to false to restrict analysis to autosomes only."
+          "description": "Enable ploidy-aware and X-inactivation-aware sex chromosome analysis: build autosomal, non-PAR male_X, non-PAR female_X, and Y component references using the per-sample sex column from the samplesheet, and call DMRs against sex-appropriate components. Set to false to restrict analysis to autosomes only."
         },
         "par_bed": {
           "type": "string",

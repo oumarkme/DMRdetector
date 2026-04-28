@@ -1,25 +1,33 @@
+# DMRdetector — single bundled conda environment.
+#
+# Includes Nextflow itself plus every binary and R/Bioconductor package the
+# pipeline invokes. Channel order is conda-forge first (newer R / system libs)
+# then bioconda (Bioconductor packages and bioinformatics CLIs). `defaults` is
+# omitted to avoid solver conflicts.
+#
+# Install:    conda env create -f environment.yml
+# Update:     conda env update -f environment.yml --prune
+# Verify:     bash bin/check_install.sh
 name: dmrdetector
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
-  # Workflow runner
-  - nextflow=25.10.4
+  # Workflow runner (Nextflow ships its own bundled JRE, but openjdk is also
+  # pinned to keep behavior consistent across hosts).
+  - nextflow >=24.10
+  - openjdk >=17
 
-  # R + libraries used by pipeline processes
-  - r-base=4.4.2
-  - r-data.table=1.17.8
-  - r-r.utils=2.13.0
-  - r-readxl=1.4.5
-  - bioconductor-ensembldb=2.30.0
-  - bioconductor-ensdb.hsapiens.v86=2.99.0
-  - bioconductor-genomicranges=1.58.0
+  # R + libraries used by pipeline processes.
+  - r-base >=4.4
+  - r-data.table >=1.17
+  - r-r.utils >=2.13                    # required by data.table::fwrite for .gz
+  - r-readxl >=1.4                      # samplesheet helpers
+  - bioconductor-ensembldb >=2.30
+  - bioconductor-ensdb.hsapiens.v86 >=2.99
+  - bioconductor-genomicranges >=1.58
 
-  # CLI tools used by Bash processes
-  - bcftools=1.23
-  - bedtools=2.31.1
-  - htslib=1.23
-
-  # Java runtime for Nextflow
-  - openjdk=21
+  # CLI tools used by Bash processes.
+  - bcftools >=1.20
+  - bedtools >=2.31
+  - htslib >=1.20

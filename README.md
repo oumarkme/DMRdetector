@@ -1,138 +1,282 @@
 <p align="center">
-  <h1 align="center">DMRdetector</h1>
-  <p align="center">
-    ONT Methylation Analysis Pipeline<br>
-    <em>Detect differentially methylated regions from Oxford Nanopore (or PacBio) whole-genome sequencing data</em>
-  </p>
+  <picture>
+    <img alt="DMRdetector" src="https://img.shields.io/badge/DMRdetector-v2.1-1f6feb?style=for-the-badge">
+  </picture>
+</p>
+
+<h1 align="center">DMRdetector</h1>
+
+<p align="center">
+  <strong>Quick detection of differentially methylated regions for CpG islands<br>
+  and imprinted CpGs based on an ONT methylation reference atlas.</strong>
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.0-blue.svg" alt="Version"></a>
-  <a href="https://www.nextflow.io/"><img src="https://img.shields.io/badge/Nextflow-%E2%89%A523.04.0-brightgreen.svg" alt="Nextflow"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://docs.conda.io/"><img src="https://img.shields.io/badge/Conda-supported-44A833.svg" alt="Conda"></a>
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20WSL2%20%7C%20macOS-lightgrey.svg" alt="Platform">
-  <img src="https://img.shields.io/badge/DOI-pending-grey.svg" alt="DOI">
+  <em>A three-stage Nextflow pipeline for Oxford Nanopore (ONT) whole-genome
+  sequencing data. Builds a population methylation reference atlas from
+  controls, defines CpG islands and imprinted control regions (ICRs)
+  directly from the atlas, and calls per-patient DMRs with
+  locus-type-specific thresholds.</em>
+</p>
+
+<p align="center">
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.1-1f6feb.svg" alt="Version"></a>
+  <a href="https://www.nextflow.io/"><img src="https://img.shields.io/badge/Nextflow-%E2%89%A524.10-2bb673.svg" alt="Nextflow"></a>
+  <a href="https://docs.conda.io/"><img src="https://img.shields.io/badge/Conda-bundled-44a833.svg" alt="Conda"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-eab308.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20WSL2%20%7C%20macOS-6b7280.svg" alt="Platform">
 </p>
 
 ---
 
-## Overview
+## At a glance
 
-**DMRdetector** builds a population-level methylation reference atlas from control samples and detects differentially methylated regions (DMRs) in case samples. CpG island and imprinted control region (ICR) panels are both analysed by default.
-
-### Pipeline Stages
-
-```
-CTRL + CASE samples
-  │
-  ├─ PREPROCESS ──────────── All samples (filter HET SNPs, coverage filter)
-  │
-  ├─ Stage 1: BUILD ATLAS ── CTRL only ─── aggregate, dispersion, FFT smoothing
-  │
-  ├─ Stage 2: DETECT CpG ─── CTRL only ─── identify CORE/SHORE, cluster, extend
-  │
-  └─ Stage 3: DETECT DMRs ── CASE only
-        ├─ CALL_DMR        (per case)  sample/atlas merge, t-test, FDR
-        └─ ANNOTATE_DMRS   (per case)  EnsDb.Hsapiens.v86 gene overlap, final TSV
-```
-
-Autosomes (1-22) are always analysed. Sex chromosomes (X, Y) are handled by
-a sex-stratified workflow that runs by **default**: sex (`M`/`F`) is read
-from the samplesheet, and the pipeline builds component references for
-autosomes, male non-PAR chrX, female non-PAR chrX, and chrY. Pass
-`--include_sex_chromosomes false` to restrict the run to autosomes only.
-See [Sex-chromosome analysis](#sex-chromosome-analysis) below.
-
-### Usage Scenarios
-
-| Scenario | Input | What runs |
-|----------|-------|-----------|
-| **Full pipeline** | CTRL + CASE samples | Stages 1 → 2 → 3 |
-| **Build atlas only** | CTRL samples only | Stages 1 → 2 |
-| **DMR detection only** | CASE samples + `--ref_atlas` (optional `--cpg_panel`) | Stage 3 only |
+|  | DMRdetector v2.1 |
+|---|---|
+| **Input** | ONT methylation BEDs (5-col, modkit, or pb-CpG-tools) + phased VCFs |
+| **Atlas method** | Beta-Binomial dispersion + empirical Bayes shrinkage + FFT-based Gaussian smoothing |
+| **CpG islands** | CORE/SHORE classification from population methylation (no GC-content threshold) |
+| **ICRs** | Hemi-methylated sites (50% ± 15%) within 134 imprinted genes ± 5 kb |
+| **DMR test** | One-sample t-test on per-CpG `DIFF`, BH FDR per panel |
+| **Sex chromosomes** | Sex-stratified atlases (male_X / female_X / Y); X-inactivation-aware |
+| **Annotation** | `EnsDb.Hsapiens.v86` (offline GRCh38; biotype-prioritised) |
+| **Runtime** | Single conda env, ~5–15 min to install, no Docker/Apptainer needed |
 
 ---
 
-## Getting Started
-
-### 1. Clone and set up the conda environment
-
-The bundled `environment.yml` installs **everything** you need (Nextflow,
-R + Bioconductor packages, bcftools, bedtools, htslib) into a single
-conda environment. No Docker or Apptainer required.
+## Quick start
 
 ```bash
 git clone https://github.com/oumarkme/DMRdetector.git
 cd DMRdetector
-conda env create -f environment.yml
+
+bash install.sh                    # creates the `dmrdetector` conda env
 conda activate dmrdetector
-```
+bash bin/check_install.sh          # all green? you're ready
 
-### 2. Download pre-built reference atlas (optional)
-
-A pre-built reference atlas is available on Zenodo: [10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867). You can use it to skip Stage 1–2 and run DMR detection directly (see [Advanced Usage](#skip-atlas-building-pre-built-references)).
-
-### 3. Run
-
-```bash
 nextflow run main.nf \
     --input samplesheet.csv \
     --outdir results
 ```
 
-> **Tip:** Use `--tmp_dir /local/fast/disk` when your input files are on network storage for significantly faster I/O.
+Outputs land under `results/`. Subsequent runs can reuse the atlas and
+panels — see [Reusing references](#reusing-references-for-faster-reruns).
+
+> **No conda yet?** Install [Miniforge](https://github.com/conda-forge/miniforge#install)
+> (recommended — bundles `mamba` and uses `conda-forge` by default), then
+> rerun `bash install.sh`.
 
 ---
 
-## Input
+## Table of contents
 
-### Samplesheet
+1. [Why DMRdetector](#why-dmrdetector)
+2. [Pipeline overview](#pipeline-overview)
+3. [Installation](#installation)
+4. [Input format](#input-format)
+5. [Running the pipeline](#running-the-pipeline)
+6. [Output](#output)
+7. [Reusing references for faster reruns](#reusing-references-for-faster-reruns)
+8. [Sex-chromosome handling](#sex-chromosome-handling)
+9. [Methodology in detail](#methodology-in-detail)
+10. [Parameters reference](#parameters-reference)
+11. [Troubleshooting](#troubleshooting)
+12. [Citation](#citation)
+13. [License](#license)
 
-A CSV file with the following columns:
+---
+
+## Why DMRdetector
+
+DNA methylation aberrations cause **imprinting disorders** (Beckwith-Wiedemann,
+Silver-Russell, Prader-Willi, Angelman), **episignature syndromes**, and
+**cancer**. ONT long-read sequencing detects 5-methylcytosine in native DNA
+without bisulfite conversion, but the standard ONT analysis stops at
+per-sample methylation calls — there is no convenient way to detect DMRs
+against a long-read population reference.
+
+DMRdetector closes that gap. It combines three capabilities that no other
+publicly available tool offers in one workflow:
+
+1. **Population-level reference atlas construction** — coverage-weighted
+   per-CpG aggregation across controls, with Beta-Binomial dispersion
+   estimation, empirical Bayes shrinkage, and FFT-based Gaussian kernel
+   smoothing.
+2. **De novo CpG island and ICR identification** — feature boundaries are
+   anchored in observed methylation rather than sequence composition,
+   capturing functional regions that classical CG-content rules miss and
+   excluding sequence-defined islands that are methylated in whole blood.
+3. **Single-sample DMR detection with locus-type-specific thresholds** —
+   CpG islands and ICRs are tested with biology-appropriate cutoffs in a
+   single per-CASE TSV.
+
+The same pipeline scales from a single-patient diagnostic run (with a
+pre-built atlas) to a full cohort atlas build.
+
+---
+
+## Pipeline overview
+
+```
+Preprocessing (all samples)
+    Heterozygous-SNP filter (bcftools + bedtools)
+    Minimum read-coverage filter
+    Auto-format BED → 5-col uniform representation
+        │
+        ├──► CTRL stream
+        │       │
+        │       Stage 1 — Reference atlas
+        │           ├─ Per-site aggregation (μ, COV, N̄, S²)
+        │           ├─ Beta-Binomial dispersion estimation
+        │           ├─ Empirical Bayes shrinkage  (φ = (1−w)·φ_raw + w·φ_trend)
+        │           └─ FFT-based Gaussian smoothing (σ = 150 + 500 bp, parallel)
+        │       ⇒ ref_atlas_{150,500}.tsv.gz
+        │
+        │       Stage 2 — Feature panels
+        │           ├─ CORE  (REF_METH < 10%, φ < 0.05)
+        │           ├─ SHORE (REF_METH < 30%, ≤ 150 bp from CORE)
+        │           ├─ Cluster, length & density filter, ±150 bp boundary extension
+        │           └─ ICRs  (50% ± 15% in 134 imprinted genes ± 5 kb)
+        │       ⇒ cpg_signal.bed, icr_region.bed
+        │
+        └──► CASE stream — Stage 3 — Targeted DMRs
+                ├─ Sample-vs-atlas merge → per-CpG DIFF
+                ├─ Threshold + cluster (gap 150 bp)
+                ├─ One-sample t-test on per-CpG DIFFs, BH FDR per panel
+                └─ Annotate with nearest gene (EnsDb.Hsapiens.v86)
+            ⇒ dmr_<sample>_case.tsv
+```
+
+When `--include_sex_chromosomes true` (default), Stages 1 and 2 run per scope
+(`autosomal`, `male_X`, `female_X`, `Y`). The female_X atlas uses a
+hemi-methylated CpG-island model (REF_METH 40–60%) to capture X-inactivation.
+
+---
+
+## Installation
+
+DMRdetector ships as a single conda environment. The bundled `environment.yml`
+includes Nextflow itself plus every binary and R/Bioconductor package the
+pipeline invokes — no Docker, no Apptainer, no Ensembl downloads.
+
+```bash
+bash install.sh                    # create
+bash install.sh --update           # refresh after pulling pipeline updates
+bash install.sh --force            # remove and recreate
+```
+
+`install.sh` auto-detects `mamba`, `micromamba`, or `conda` and uses the
+fastest solver available. After install:
+
+```bash
+conda activate dmrdetector
+bash bin/check_install.sh          # verifies every CLI + R package
+```
+
+### Bundled dependencies
+
+| Tool | Min version | Purpose |
+|------|-------------|---------|
+| `nextflow`                          | 24.10 | Workflow runner |
+| `openjdk`                           | 17    | Java runtime for Nextflow |
+| `r-base`                            | 4.4   | R interpreter |
+| `r-data.table`                      | 1.17  | Atlas / DMR table operations |
+| `r-r.utils`                         | 2.13  | gzip support for `data.table::fwrite` |
+| `r-readxl`                          | 1.4   | xlsx samplesheet helpers |
+| `bioconductor-ensembldb`            | 2.30  | Gene annotation queries |
+| `bioconductor-ensdb.hsapiens.v86`   | 2.99  | GRCh38 gene database (offline) |
+| `bioconductor-genomicranges`        | 1.58  | Range overlap |
+| `bcftools`                          | 1.20  | VCF parsing |
+| `bedtools`                          | 2.31  | Interval intersection |
+| `htslib`                            | 1.20  | bgzip / tabix |
+
+### System requirements
+
+- **OS:** Linux, WSL2, or x86_64 macOS.
+  (`EnsDb.Hsapiens.v86` has no native Apple Silicon build; use Rosetta on M-series Macs.)
+- **RAM:** ≥ 16 GB for ~10-sample cohorts; ≥ 64 GB for full hg38 autosomal
+  smoothing of ~30 M CpG sites.
+- **Disk:** ≥ 30 GB for atlas TSVs and Nextflow work cache (per cohort).
+
+---
+
+## Input format
+
+The samplesheet is a 5-column CSV with this exact header:
 
 ```csv
 sample_id,type,sex,meth_bed,vcf
-ONT001,CASE,M,/path/to/ONT001.combined.bed.gz,/path/to/ONT001.vcf
-ONT004,CTRL,F,/path/to/ONT004.combined.bed.gz,/path/to/ONT004.vcf
+ONT001,CASE,M,/path/to/ONT001.combined.bed.gz,/path/to/ONT001.phased.vcf
+ONT004,CTRL,F,/path/to/ONT004.combined.bed.gz,/path/to/ONT004.phased.vcf
 ```
 
-| Column | Description |
-|--------|-------------|
-| `sample_id` | Unique sample identifier |
-| `type` | `CASE` or `CTRL` |
-| `sex` | `M` or `F` (required; routes chrX/chrY to the correct component scope) |
-| `meth_bed` | Path to methylation BED file (gzipped) |
-| `vcf` | Path to VCF file (used to exclude heterozygous SNP sites) |
+| Column | Type | Description |
+|--------|------|-------------|
+| `sample_id` | string | Unique identifier; appears in output filenames. |
+| `type`      | enum   | `CASE` or `CTRL`. CTRLs build the atlas; CASEs are tested. |
+| `sex`       | enum   | `M` or `F`. Routes chrX/chrY beds to the correct scope. |
+| `meth_bed`  | path   | Methylation BED (gzipped). Auto-detects format. |
+| `vcf`       | path   | Phased VCF used to mask heterozygous SNP positions. |
 
-### Methylation BED Formats
+The header, missing/duplicate IDs, and `type`/`sex` values are validated
+before any process runs — bad samplesheets fail in under a second.
 
-The pipeline auto-detects the input format based on column count:
+### Methylation BED formats (auto-detected)
 
-| Format | Columns | COVERAGE | N_MOD |
-|--------|---------|----------|-------|
-| **5-column** (default) | CHROM, START, END, COVERAGE, N_MOD | col 4 | col 5 |
-| **modkit pileup** | 18 columns (bedMethyl) | col 10 | col 12 |
-| **pb-CpG-tools** | 7-9 columns (with header) | col 6 | col 7 |
+| Format | Cols | Coverage column | Modified-read column |
+|--------|------|-----------------|----------------------|
+| 5-col plain                    | 5    | col 4 | col 5 |
+| modkit `pileup` (bedMethyl)    | 18   | col 10 (`Nvalid_cov`) | col 12 (`Nmod`) |
+| pb-CpG-tools `combined`        | 7–9 (with header) | col 6 | col 7 |
 
-### Gene Annotation
+All formats are normalised to a uniform 5-column representation during
+preprocessing.
 
-DMRs are annotated with the nearest gene using the `EnsDb.Hsapiens.v86`
-Bioconductor package (GRCh38, Ensembl release 86) bundled with the conda
-environment. No external GTF download is needed; per-region selection
-prefers `protein_coding` over `lncRNA` over pseudogenes, with overlap
-width and gene length as tie-breakers.
+---
 
-### ICR Panel
+## Running the pipeline
 
-ICR analysis runs by default. When a reference atlas is available, DMRdetector defines ICRs as hemi-methylated regions within imprinting gene candidate intervals from [`assets/icr_gene_list.bed`](assets/icr_gene_list.bed). To override the ICR panel, pass an ICR BED such as [`assets/icr_region.bed`](assets/icr_region.bed); do not pass whole imprinting gene body coordinates as `--icr_panel`.
+### Default — build atlas and run DMRs
 
 ```bash
 nextflow run main.nf \
-    --input samplesheet.csv \
-    --icr_panel my_icr_regions.bed \
+    --input  samplesheet.csv \
     --outdir results
 ```
+
+Both autosomal and sex-stratified analyses run. Sex chromosomes are on by
+default; pass `--include_sex_chromosomes false` for chr1–22 only.
+
+### Common flags
+
+```bash
+nextflow run main.nf \
+    --input    samplesheet.csv \
+    --outdir   results \
+    --tmp_dir  /raid/nf/dmrdetector \   # local scratch (NAS-friendly)
+    --max_cpus 16 \                      # cap concurrency
+    --max_memory '64.GB' \
+    -ansi-log false \                    # readable in piped logs
+    -with-report results/nf_report.html
+```
+
+### Resume after failure
+
+Nextflow caches every completed task. Add `-resume` to restart only failed
+and downstream tasks:
+
+```bash
+nextflow run main.nf --input samplesheet.csv --outdir results -resume
+```
+
+### Test profile
+
+```bash
+nextflow run main.nf -profile test --input samplesheet.csv --outdir results
+```
+
+Caps `max_cpus=4`, `max_memory=16.GB`, `max_time=1.h` — useful for CI or
+quick local checks.
 
 ---
 
@@ -141,245 +285,404 @@ nextflow run main.nf \
 ```
 results/
 ├── atlas/
-│   ├── ref_atlas_150.tsv.gz          # Autosomal chr1-22 reference atlas (narrow)
-│   ├── ref_atlas_500.tsv.gz          # Autosomal chr1-22 reference atlas (wide)
-│   ├── ref_atlas_150_male_X.tsv.gz   # Male CTRL non-PAR chrX atlas
-│   ├── ref_atlas_500_male_X.tsv.gz
-│   ├── ref_atlas_150_female_X.tsv.gz # Female CTRL non-PAR chrX atlas
-│   ├── ref_atlas_500_female_X.tsv.gz
-│   ├── ref_atlas_150_Y.tsv.gz        # Male CTRL chrY atlas
-│   └── ref_atlas_500_Y.tsv.gz
+│   ├── ref_atlas_150.tsv.gz             # Autosomal atlas (σ=150, primary)
+│   ├── ref_atlas_500.tsv.gz             # Autosomal atlas (σ=500, regional)
+│   ├── ref_atlas_150_male_X.tsv.gz      # Male non-PAR chrX
+│   ├── ref_atlas_150_female_X.tsv.gz    # Female non-PAR chrX (hemi-meth)
+│   ├── ref_atlas_150_Y.tsv.gz           # Male chrY
+│   └── (matching σ=500 files)
 ├── cpg_islands/
-│   ├── cpg_signal.bed                # Autosomal CpG panel
-│   ├── cpg_signal_male_X.bed         # Male non-PAR chrX CpG panel
-│   ├── cpg_signal_female_X.bed       # Female non-PAR chrX hemi-methylated panel
-│   └── cpg_signal_Y.bed              # Male chrY CpG panel
+│   ├── cpg_signal.bed                   # Autosomal CpG panel
+│   ├── cpg_signal_male_X.bed
+│   ├── cpg_signal_female_X.bed
+│   └── cpg_signal_Y.bed
 ├── icr_regions/
-│   └── icr_region.bed                # ICRs defined from imprinting genes + atlas
+│   └── icr_region.bed                   # ICR panel (autosomal)
 ├── dmr/
-│   └── dmr_{sample}_case.tsv     # DMR results per case sample (with PANEL_SCOPE column by default)
-└── nf_report.html                # Nextflow execution report
+│   └── dmr_<sample_id>_case.tsv         # Per-CASE annotated DMRs
+└── nf_report.html                       # Nextflow execution report
 ```
 
-### DMR Output Columns
+### Reference atlas columns (`ref_atlas_*.tsv.gz`)
+
+`CHROM, START, END, REF_METH, REF_VAR, COV, N_SAMPLES, PHI`
+
+- `REF_METH` — coverage-weighted, Gaussian-smoothed mean methylation (0–1).
+- `REF_VAR`  — expected biological variance under Beta-Binomial.
+- `PHI`      — shrunken inter-individual dispersion.
+
+### DMR TSV columns (`dmr_<sample>_case.tsv`)
 
 | Column | Description |
 |--------|-------------|
-| CHROM, START, END | Genomic coordinates |
-| GENE | Nearest gene symbol |
-| PANEL | `CpG` or `ICR` |
-| NUM_CPG | Number of CpG sites in region |
-| NUM_READS | Mean read coverage |
-| SAMPLE_METH (%) | Sample methylation level |
-| REF_METH (%) | Reference methylation level |
-| DIFF (%) | Difference (sample - reference) |
-| P_VALUE | T-test p-value |
-| P_FDR | Benjamini-Hochberg adjusted p-value |
-| DIRECTION | `hyper` or `hypo` |
+| `CHROM, START, END`  | Region coordinates (chr-prefixed, hg38). |
+| `GENE`               | Nearest gene from `EnsDb.Hsapiens.v86` (biotype-prioritised). |
+| `PANEL`              | `CpG` or `ICR`. |
+| `NUM_CPG`            | Number of CpG sites contributing to the region. |
+| `NUM_READS`          | Mean per-CpG read coverage. |
+| `SAMPLE_METH (%)`    | Mean methylation in this CASE. |
+| `REF_METH (%)`       | Mean methylation in the reference atlas. |
+| `DIFF (%)`           | `SAMPLE_METH − REF_METH`. |
+| `P_VALUE`            | One-sample t-test on per-CpG `DIFF` within the region. |
+| `P_FDR`              | Benjamini-Hochberg adjusted, per panel. |
+| `DIRECTION`          | `hyper` (DIFF > 0) or `hypo` (DIFF < 0). |
 
-A `PANEL_SCOPE` column (`autosomal` / `male_X` / `female_X` / `Y`) identifies
-which reference branch produced each row. It is omitted when
-`--include_sex_chromosomes false` is passed.
+### Default locus-type-specific thresholds
 
----
+| Panel | `\|DIFF\|` | `NUM_CPG` | `FDR` |
+|---|---|---|---|
+| **CpG island** | > 40 % | > 30 | < 0.01 |
+| **ICR**        | > 25 % | > 5  | < 0.01 |
+| **female_X** (hemi-methylated CpG model) | > 25 % | > 5 | < 0.01 |
 
-## Parameters
-
-Default values are defined in [`nextflow.config`](nextflow.config). Override on the command line:
-
-```bash
-nextflow run main.nf --input samplesheet.csv --dmr_fdr_threshold 0.05
-```
-
-<details>
-<summary><strong>Reference Atlas (Stage 1)</strong></summary>
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `atlas_min_samples_per_site` | 3 | Minimum samples per CpG site |
-| `atlas_min_read_coverage` | 5 | Minimum read coverage |
-| `atlas_shrinkage_weight` | 0.1 | Empirical Bayes shrinkage weight |
-| `smooth_sigma_narrow` | 150 | Narrow Gaussian bandwidth (bp) |
-| `smooth_sigma_wide` | 500 | Wide Gaussian bandwidth (bp) |
-
-</details>
-
-<details>
-<summary><strong>CpG Island Detection (Stage 2)</strong></summary>
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `cpg_min_samples_per_site` | 5 | Minimum samples for pre-filtering |
-| `cpg_core_max_methylation` | 0.1 | CORE site methylation threshold |
-| `cpg_core_max_dispersion` | 0.05 | CORE site dispersion threshold |
-| `cpg_shore_max_methylation` | 0.3 | SHORE site methylation threshold |
-| `cpg_max_gap_distance` | 150 | Max gap for clustering (bp) |
-| `cpg_min_island_length` | 150 | Minimum island length (bp) |
-
-</details>
-
-<details>
-<summary><strong>DMR Detection (Stage 3)</strong></summary>
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `dmr_min_coverage` | 10 | Minimum coverage for case samples |
-| `dmr_cpg_diff_threshold` | 0.40 | \|DIFF\| threshold for CpG panel |
-| `dmr_merge_distance` | 150 | Max gap for merging sites (bp) |
-| `dmr_fdr_threshold` | 0.01 | FDR significance threshold |
-| `dmr_cpg_min_sites` | 30 | Min CpG sites for CpG panel |
-| `icr_panel` | null | Advanced ICR BED override; must contain ICR regions, not whole gene bodies |
-| `icr_gene_list` | `assets/icr_gene_list.bed` | Imprinting gene candidate BED used to define ICRs from an atlas |
-| `icr_ref_meth_min` | 0.40 | Lower REF_METH bound for hemi-methylated ICR definition |
-| `icr_ref_meth_max` | 0.60 | Upper REF_METH bound for hemi-methylated ICR definition |
-| `icr_diff_threshold` | 0.25 | \|DIFF\| threshold for ICR panel |
-| `icr_min_sites` | 5 | Min CpG sites for ICR panel |
-
-</details>
-
-<details>
-<summary><strong>Sex Chromosomes (default)</strong></summary>
-
-Active only when `--include_sex_chromosomes true`. See
-[Sex-chromosome analysis](#sex-chromosome-analysis) for the full workflow.
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `include_sex_chromosomes` | true | Enable sex-stratified chrX/chrY analysis (default). Set to `false` for autosomes only |
-| `par_bed` | null | Override built-in hg38 PAR BED (4-col: CHROM START END NAME) |
-| `sex_atlas_min_controls` | 3 | Minimum male/female CTRL count required for sex-specific CASE comparisons |
-| `sex_f_ref_meth_min` | 0.40 | Female_X hemi-methylated CpG island lower REF_METH bound |
-| `sex_f_ref_meth_max` | 0.60 | Female_X hemi-methylated CpG island upper REF_METH bound |
-| `sex_f_diff_threshold` | 0.25 | \|DIFF\| threshold for female_X DMRs |
-| `sex_f_min_sites` | 5 | Min CpG sites for female_X DMRs |
-
-</details>
-
-<details>
-<summary><strong>Resource Management</strong></summary>
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `max_cpus` | auto | Maximum total CPUs |
-| `max_memory` | auto | Maximum total memory |
-| `max_time` | 168.h | Maximum time per process |
-| `tmp_dir` | null | Local temp directory for work/tmp files |
-
-Resources are auto-detected at startup (80% of system RAM; CPUs capped by RAM/4GB ratio):
-
-| System | Cores | RAM | max_cpus | max_memory |
-|--------|-------|-----|----------|------------|
-| Laptop | 8 | 16 GB | 3 | 12 GB |
-| Workstation | 16 | 64 GB | 12 | 51 GB |
-| Server | 96 | 2 TB | 76 | 1.6 TB |
-
-Override: `--max_cpus 4 --max_memory '16.GB'`
-
-</details>
+ICR thresholds are deliberately relaxed: imprinted loci are hemi-methylated
+(baseline ≈ 50%), so allele-specific methylation changes of smaller magnitude
+are biologically meaningful.
 
 ---
 
-## Advanced Usage
+## Reusing references for faster reruns
 
-### Skip atlas building (pre-built references)
+Stage 1 (atlas) and Stage 2 (CpG / ICR panels) are the slow steps. Once
+they exist, **subsequent runs can skip them** and only recompute the
+per-CASE DMR calls.
+
+### Sex-stratified reuse (recommended)
 
 ```bash
 nextflow run main.nf \
-    --input samplesheet.csv \
-    --ref_atlas results/atlas/ref_atlas_150.tsv.gz \
-    --outdir results
+    --input  samplesheet.csv \
+    --outdir results \
+    --ref_atlas          results/atlas/ref_atlas_150.tsv.gz \
+    --ref_atlas_male_X   results/atlas/ref_atlas_150_male_X.tsv.gz \
+    --ref_atlas_female_X results/atlas/ref_atlas_150_female_X.tsv.gz \
+    --ref_atlas_Y        results/atlas/ref_atlas_150_Y.tsv.gz \
+    --cpg_panel          results/cpg_islands/cpg_signal.bed \
+    --cpg_panel_male_X   results/cpg_islands/cpg_signal_male_X.bed \
+    --cpg_panel_female_X results/cpg_islands/cpg_signal_female_X.bed \
+    --cpg_panel_Y        results/cpg_islands/cpg_signal_Y.bed \
+    --icr_panel          results/icr_regions/icr_region.bed
 ```
 
-When `--ref_atlas` is provided without `--cpg_panel`, DMRdetector detects a
-CpG island panel from that atlas. Pass `--cpg_panel` only when you want to
-override this with a pre-built BED such as [`assets/cpg_island.bed`](assets/cpg_island.bed).
+When all three sex-specific atlases are supplied alongside the autosomal
+one, Stages 1 and 2 are bypassed completely while CASE samples are still
+sex-stratified into autosomal/male_X/female_X/Y for DMR calling.
 
-### Resume after failure
-
-Nextflow caches completed tasks. Add `-resume` to continue where you left off:
+### Autosomal-only reuse
 
 ```bash
-nextflow run main.nf [same options] -resume
+nextflow run main.nf \
+    --input  samplesheet.csv \
+    --outdir results \
+    --ref_atlas results/atlas/ref_atlas_150.tsv.gz \
+    --cpg_panel results/cpg_islands/cpg_signal.bed \
+    --icr_panel results/icr_regions/icr_region.bed \
+    --include_sex_chromosomes false
 ```
 
-### Profiles
-
-| Profile | Description |
-|---------|-------------|
-| `test` | Reduced resources (4 CPUs, 16 GB) for CI/testing |
+> **Tip:** A pre-built reference atlas constructed from 63 ONT control
+> whole-blood genomes is archived at Zenodo:
+> [10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867).
 
 ---
 
-## Sex-chromosome analysis
+## Sex-chromosome handling
 
-Sex-stratified analysis of chrX/chrY runs by default. Pass
-`--include_sex_chromosomes false` to disable it (see
-[Autosomes-only mode](#autosomes-only-mode) below). Sex (`M` or `F`) is a
-required column in the input samplesheet — the pipeline does not infer sex.
-In the default path the pipeline:
+A separate methylation atlas for the X chromosome beyond the pseudoautosomal
+region (PAR) is constructed for males and females separately, **to deal with
+the effects of X-inactivation**. With `--include_sex_chromosomes true`
+(default):
 
-1. **Reads sex per sample** from the samplesheet `sex` column (M/F). Validation
-   at launch rejects missing or non-M/F values.
-2. **Splits each methylation BED** (`SPLIT_SEX_COMPONENTS`) into component
-   scopes: autosomal chr1-22, non-PAR chrX, and chrY. Built-in PAR coordinates
-   are used for non-PAR chrX/Y splitting.
-3. **Builds four reference atlases** (`BUILD_ATLAS` + `SMOOTH_ATLAS`):
-   - **autosomal** — chr1-22 from all CTRLs, written as
-     `ref_atlas_{150,500}.tsv.gz`.
-   - **male_X** — non-PAR chrX from male CTRLs.
-   - **female_X** — non-PAR chrX from female CTRLs.
-   - **Y** — full chrY from male CTRLs.
-   If a CASE requires a sex-specific comparison and too few matching CTRLs are
-   available, the pipeline exits with a clear error.
-4. **Detects CpG panels per scope**: autosomal, `male_X`, and `Y` use the
-   standard CORE (REF_METH < 10%) + SHORE (REF_METH < 30%) rules. `female_X`
-   uses a hemi-methylated island rule (`sex_f_ref_meth_min` to
-   `sex_f_ref_meth_max`, default 40-60%) to model X-inactivation.
-5. **Defines ICRs from the autosomal atlas** by selecting 40-60%
-   hemi-methylated regions inside imprinting gene candidates from
-   `assets/icr_gene_list.bed`. If `--icr_panel` is provided, that ICR BED is
-   used directly.
-6. **Calls DMRs against sex-appropriate component atlases**:
+1. Each preprocessed BED is split into autosomal chr1–22, non-PAR chrX, and
+   chrY components using bundled hg38 PAR coordinates
+   (`assets/par_hg38.bed`).
+2. CTRL components feed four reference atlases:
+   - **autosomal** — all CTRLs; standard CORE/SHORE classification.
+   - **male_X**    — male CTRLs (non-PAR chrX, hemizygous).
+   - **female_X**  — female CTRLs; hemi-methylated model (REF_METH 40–60%)
+                    capturing X-inactivation rather than the autosomal
+                    hypomethylated model.
+   - **Y**         — male CTRLs.
+3. CASE samples are routed by the `sex` column:
+   - **Male CASE**   → autosomal + male_X + Y.
+   - **Female CASE** → autosomal + female_X (no Y).
+4. ICR analysis remains autosomal-only by design (the curated imprinting
+   gene list spans chr1–22).
 
-   | Scope | `diff` threshold | `min_sites` | REF_METH gate |
-   |---|---|---|---|
-   | `autosomal` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
-   | `male_X` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
-   | `female_X` | `sex_f_diff_threshold` (0.25) | `sex_f_min_sites` (5) | none |
-   | `Y` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
+The minimum same-sex CTRLs required per scope is `--sex_atlas_min_controls`
+(default 3); cohorts below threshold for one scope skip that scope and emit
+a warning.
 
-   CpG and ICR DMRs are both called by default. ICR calling is autosomal-only.
-   Male CASE samples run `autosomal + male_X + Y`; female CASE samples run
-   `autosomal + female_X`. Results are merged per sample by `ANNOTATE_DMRS`,
-   tagged with `PANEL` and `PANEL_SCOPE`, and published as a single
-   `dmr_{sample}_case.tsv`.
+To restrict the run to autosomes only:
 
-### Autosomes-only mode
+```bash
+nextflow run main.nf --input samplesheet.csv --outdir results \
+    --include_sex_chromosomes false
+```
 
-Pass `--include_sex_chromosomes false` to opt out of the sex-stratified
-workflow. Only the autosomal branch runs, no sex inference is performed,
-and outputs match the pre-feature layout: `ref_atlas_{150,500}.tsv.gz`,
-`cpg_signal.bed`, and `dmr_{sample}_case.tsv` without a `PANEL_SCOPE`
-column.
+---
+
+## Methodology in detail
+
+The descriptions below mirror the *Materials and Methods* section of the
+manuscript. The pipeline supports hg38 / GRCh38 only.
+
+### Preprocessing
+
+Heterozygous SNP positions are extracted from each sample's VCF using
+`bcftools` and converted to BED; CpG sites overlapping any heterozygous SNP
+are removed using `bedtools` to **eliminate allele-specific methylation
+artifacts caused by C-to-T polymorphisms** at or near CpG dinucleotides.
+A per-sample read-coverage filter is applied — `> 5×` for atlas building
+and `> 10×` for DMR detection. The pipeline uses the lower threshold for
+a single preprocessing pass that satisfies both stages.
+
+### Stage 1 — Reference atlas construction
+
+1. **Per-site aggregation.** For each CpG site: number of contributing
+   samples (`N`), total coverage (`COV`), total methylated read count,
+   sample variance of per-sample methylation ratios (`S²`), mean per-sample
+   coverage (`N̄ = COV / N`). Sites with fewer than three contributing
+   samples are excluded. The aggregate reference methylation
+   `μ = methylated_reads / COV` weighs each sample proportionally to its
+   sequencing depth.
+2. **Beta-Binomial dispersion estimation** quantifies inter-individual
+   methylation variability via a moment-based estimator for the
+   overdispersion parameter φ; negative estimates are zeroed and values
+   above 1 are capped (Feng et al., 2014).
+3. **Empirical Bayes shrinkage** stabilises low-coverage estimates:
+   `φ = (1 − w)·φ_raw + w·φ_trend`, with `w = 0.1` and `φ_trend` =
+   genome-wide median of positive `φ_raw`. Modest weight preserves
+   site-specific signal while dampening noise (Love et al., 2014;
+   Wu et al., 2013; Feng et al., 2014).
+4. **FFT-based Gaussian kernel smoothing.** A 1-D Gaussian kernel
+   `K(x) = exp(−x²/2σ²)` (truncated at `R = |3σ|`, > 99.7% of mass) is
+   convolved per chromosome with dense numerator (`μ × COV`) and
+   denominator (`COV`) vectors via FFT; smoothed
+   `REF_METH = numerator / denominator` (coverage-weighted Nadaraya–Watson
+   regression — avoids the bias of directly smoothing methylation ratios
+   at sites with heterogeneous coverage). Two bandwidths run in parallel:
+   `σ = 150 bp` (CpG-island scale, used downstream) and `σ = 500 bp`
+   (regional trends). FFT cuts the smoother from O(nk) to O(n log n).
+
+### Stage 2a — De novo CpG island identification
+
+Sites are first filtered to retain only those with **more than five
+contributing control samples** (a stricter threshold than the
+three-sample minimum used during atlas construction), then classified:
+
+- **CORE**  — `REF_METH < 10 %` and shrunken dispersion `φ < 0.05`.
+              Positions consistently and stably unmethylated across the cohort.
+- **SHORE** — `REF_METH < 30 %`, within 150 bp of the nearest CORE site,
+              not themselves CORE.
+
+CORE sites are clustered (new cluster when the gap > 150 bp), filtered for
+minimum island length ≥ 150 bp and minimum CORE density of 1 site / 100 bp,
+then extended ±150 bp to incorporate flanking SHORE sites. The two-tier
+classification draws a conceptual parallel with MethylSeekR's UMR framework
+(Burger et al., 2013); the difference is that CORE/SHORE here are derived
+from **population-level** statistics, providing cohort-consensus boundaries
+rather than sample-specific segmentations.
+
+### Stage 2b — Imprinted control regions (ICRs)
+
+Imprinted loci are hemi-methylated (≈ 50%) and are therefore excluded from
+the hypomethylated CpG island set. A separate panel is built: a curated
+list of **134 imprinted genes** from geneimprint.com is intersected with
+Ensembl GRCh38 coordinates and extended ±5 kb. Within each region, CpG
+sites with **REF_METH 50% ± 15%** (`[0.35, 0.65]`) and inter-site distances
+< 150 bp are grouped into ICRs.
+
+### Stage 3 — Targeted DMR detection
+
+Preprocessed CpG sites from each CASE are joined with the reference atlas
+by an inner merge on coordinates; `DIFF = SAMPLE_METH − REF_METH` is
+computed per site. Sites below the panel-specific `|DIFF|` cutoff are
+removed; remaining sites are clustered into contiguous regions (gap
+threshold 150 bp). Each region is tested with a **one-sample t-test** on
+the per-CpG `DIFF` values within that region; regions with fewer than two
+sites get NA p-values. **Benjamini-Hochberg FDR is applied per panel
+independently.** The single-sample testing approach follows
+Rezwan et al. (2015) and Grolaux et al. (2022).
+
+### Gene annotation
+
+Each DMR is annotated with the nearest gene symbol from the offline
+`EnsDb.Hsapiens.v86` Bioconductor package. When multiple genes overlap a
+DMR, biotype priority is applied (protein_coding → IG/TR genes →
+lncRNA/antisense → miRNA → sno/snRNA → rRNA → misc_RNA →
+processed_transcript → pseudogenes), with overlap-width and gene-length
+tie-breaks. Genes lacking a `gene_name` attribute fall back to their
+Ensembl `gene_id`.
+
+---
+
+## Parameters reference
+
+<details>
+<summary><strong>Input / output</strong></summary>
+
+| Parameter   | Default     | Description |
+|-------------|-------------|-------------|
+| `input`     | required    | Samplesheet CSV. |
+| `outdir`    | `./results` | Output directory. |
+| `tmp_dir`   | null        | Local scratch (recommended for NAS-backed inputs). |
+
+</details>
+
+<details>
+<summary><strong>Pre-built references (skip Stages 1 / 2)</strong></summary>
+
+| Parameter            | Description |
+|----------------------|-------------|
+| `ref_atlas`          | Autosomal atlas (tsv.gz). Skips Stage 1 autosomal. |
+| `ref_atlas_male_X`   | Male non-PAR chrX atlas. |
+| `ref_atlas_female_X` | Female non-PAR chrX atlas. |
+| `ref_atlas_Y`        | chrY atlas. |
+| `cpg_panel`          | Autosomal CpG island BED. |
+| `cpg_panel_male_X`   | male_X CpG panel. |
+| `cpg_panel_female_X` | female_X CpG panel. |
+| `cpg_panel_Y`        | Y CpG panel. |
+| `icr_panel`          | ICR BED. |
+| `icr_gene_list`      | Imprinting candidate gene list (BED4: CHROM/START/END/GENE). Defaults to `assets/icr_gene_list.bed`. |
+
+</details>
+
+<details>
+<summary><strong>Stage 1 — Atlas</strong></summary>
+
+| Parameter                    | Default | Description |
+|------------------------------|---------|-------------|
+| `atlas_min_samples_per_site` | 3       | Min CTRLs covering a site to keep it. |
+| `atlas_min_read_coverage`    | 5       | Per-sample coverage filter during preprocessing. |
+| `atlas_shrinkage_weight`     | 0.1     | Linear shrinkage `w` toward genome-wide φ trend. |
+| `smooth_sigma_narrow`        | 150     | Primary FFT-Gaussian σ (CpG-island scale). |
+| `smooth_sigma_wide`          | 500     | Secondary σ (regional trend). |
+
+</details>
+
+<details>
+<summary><strong>Stage 2 — CpG islands</strong></summary>
+
+| Parameter                   | Default | Description |
+|-----------------------------|---------|-------------|
+| `cpg_min_samples_per_site`  | 5       | Stricter sample threshold for island calling. |
+| `cpg_core_max_methylation`  | 0.1     | CORE upper REF_METH bound. |
+| `cpg_core_max_dispersion`   | 0.05    | CORE upper φ bound. |
+| `cpg_shore_max_methylation` | 0.3     | SHORE upper REF_METH bound. |
+| `cpg_max_gap_distance`      | 150     | Max gap (bp) before a new cluster. |
+| `cpg_min_island_length`     | 150     | Minimum island length (bp). |
+
+</details>
+
+<details>
+<summary><strong>Stage 2 — ICR panel</strong></summary>
+
+| Parameter            | Default | Description |
+|----------------------|---------|-------------|
+| `icr_ref_meth_min`   | 0.35    | Lower REF_METH bound (50% − 15%). |
+| `icr_ref_meth_max`   | 0.65    | Upper REF_METH bound (50% + 15%). |
+| `icr_diff_threshold` | 0.25    | DMR `|DIFF|` cutoff for ICR panel. |
+| `icr_min_sites`      | 5       | Min CpG count per ICR DMR. |
+
+</details>
+
+<details>
+<summary><strong>Stage 3 — DMR detection</strong></summary>
+
+| Parameter                | Default | Description |
+|--------------------------|---------|-------------|
+| `dmr_min_coverage`       | 10      | Per-sample coverage threshold for CpGs entering DMR test. |
+| `dmr_cpg_diff_threshold` | 0.40    | DMR `|DIFF|` cutoff for CpG panel. |
+| `dmr_merge_distance`     | 150     | Max gap (bp) before clustering breaks. |
+| `dmr_fdr_threshold`      | 0.01    | Benjamini-Hochberg cutoff. |
+| `dmr_cpg_min_sites`      | 30      | Min CpG count per CpG-panel DMR. |
+
+</details>
+
+<details>
+<summary><strong>Sex chromosomes</strong></summary>
+
+| Parameter                  | Default     | Description |
+|----------------------------|-------------|-------------|
+| `include_sex_chromosomes`  | true        | Master toggle. |
+| `par_bed`                  | bundled hg38 | Override PAR coordinates. |
+| `sex_atlas_min_controls`   | 3           | Min same-sex CTRLs needed for a sex-specific atlas. |
+| `sex_f_ref_meth_min`       | 0.40        | Female-X hemi-methylated island lower bound. |
+| `sex_f_ref_meth_max`       | 0.60        | Female-X upper bound. |
+| `sex_f_diff_threshold`     | 0.25        | DMR cutoff on female_X. |
+| `sex_f_min_sites`          | 5           | Min CpGs per female_X DMR. |
+
+</details>
+
+<details>
+<summary><strong>Resources</strong></summary>
+
+`max_cpus` and `max_memory` auto-detect to 80 % of the host (CPU capped to
+1 core per 4 GB RAM). Override with `--max_cpus N --max_memory '32.GB'`.
+
+</details>
+
+---
+
+## Troubleshooting
+
+> **`samplesheet ... is missing required column(s): sex`**
+> The samplesheet must include all 5 columns including `sex`. See
+> [Input format](#input-format).
+
+> **`include_sex_chromosomes=true but --ref_atlas is provided without --ref_atlas_male_X / _female_X / _Y`**
+> Pass all three sex-specific atlases or accept the autosomal-only fallback.
+> See [Reusing references](#reusing-references-for-faster-reruns).
+
+> **Autosomal `SMOOTH_ATLAS` runs slowly**
+> Full hg38 covers ~30 M CpG sites; FFT smoothing per chromosome needs
+> ≥ 30 GB RAM and several minutes per σ. Use `--max_cpus` to control
+> parallelism and `--tmp_dir` on a fast local disk.
+
+> **`Cannot find script file: main.nf`**
+> Run `nextflow run` from the repo root, or pass the full path:
+> `nextflow run /path/to/DMRdetector/main.nf …`.
+
+> **`-resume` does not pick up a hand-edited atlas**
+> Nextflow caches by input file hash. If you edit a pre-built reference in
+> place, also remove the work cache directory (`rm -rf <tmp_dir>/work`).
 
 ---
 
 ## Citation
 
-If you use this pipeline in your research, please cite:
+If you use DMRdetector, please cite:
 
-> Ou JH, Tsai M, et al. A map of CpG islands based on an ONT methylation reference atlas and a framework for detection of differentially methylated regions. *(manuscript in preparation)*
+> Ou J-H, Tsai M, *et al.* **Quick detection of differentially methylated
+> regions for CpG islands and imprinted CpGs based on an ONT methylation
+> reference atlas.** Department of Medical Genetics, National Taiwan
+> University Hospital. (Manuscript in preparation, 2026.)
 
-## Authors
+The pipeline and pre-built atlases are freely available at
+<https://github.com/oumarkme/DMRdetector> under the MIT licence. A
+pre-built reference atlas constructed from 63 ONT control whole-blood
+genomes (30,119,904 CpG sites; 25,901 CpG islands; 407 ICRs across 124
+imprinted genes) is archived at Zenodo:
+[10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867).
 
-Jen-Hsiang (Mark) Ou\*, Melody Tsai\*, Ni-Chung Lee†, Wuh-Liang Hwu†
+### Selected method references
 
-\* Equal contribution · † Corresponding authors
+- Burger L. *et al.* MethylSeekR. *Nucleic Acids Research* (2013).
+- Feng H. *et al.* DSS / Beta-Binomial dispersion. *Bioinformatics* (2014).
+- Gardiner-Garden M. & Frommer M. CpG island sequence definition.
+  *J. Mol. Biol.* (1987).
+- Grolaux R. *et al.* Single-patient DMR detection. *Clinical Epigenetics* (2022).
+- Hansen K.D. *et al.* BSmooth. *Genome Biology* (2012).
+- Love M.I. *et al.* DESeq2 dispersion shrinkage. *Genome Biology* (2014).
+- Peters T.J. *et al.* DMRcate. *Genome Biology* (2015).
+- Rezwan F.I. *et al.* Single-case methylation diagnosis.
+  *Clinical Epigenetics* (2015).
+- Sigurpalsdottir B. *et al.* deCODE 7,179-sample ONT methylation atlas.
+  *Nature Genetics* (2024).
 
-**Pipeline maintainer:** Jen-Hsiang (Mark) Ou — [oujenhsiang@ntu.edu.tw](mailto:oujenhsiang@ntu.edu.tw)
+---
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
-
-Copyright (c) 2025 Jen-Hsiang (Mark) Ou
+[MIT](LICENSE) © Jen-Hsiang Ou, Department of Medical Genetics, National Taiwan University Hospital.
