@@ -15,8 +15,6 @@ All notable changes to this project will be documented in this file.
   or updates the `dmrdetector` env in one command.
 - **`bin/check_install.sh`** verifies every CLI tool and R package the
   pipeline needs and reports failures with exact package names.
-- **CI workflow** (`.github/workflows/ci.yml`) runs env install and the
-  smoke test on every push.
 - **Sex-stratified reference reuse**: new params `--ref_atlas_male_X`,
   `--ref_atlas_female_X`, `--ref_atlas_Y`, `--cpg_panel_male_X`,
   `--cpg_panel_female_X`, `--cpg_panel_Y` allow Stages 1+2 to be skipped
