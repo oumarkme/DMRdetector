@@ -9,7 +9,7 @@
  * Three stages:
  *   1. Build reference atlas from control samples
  *   2. Detect hypomethylated CpG islands
- *   3. Detect DMRs per sample vs reference (CpG panel + optional panel2)
+ *   3. Detect DMRs per sample vs reference (CpG island + ICR panels)
  *
  * Three usage scenarios (auto-detected):
  *   - Build atlas only:  --ref_atlas NOT set, samplesheet has only CTRL
@@ -21,7 +21,8 @@
  *   - modkit pileup (bedMethyl): 18 cols → uses cols 10 (Nvalid_cov), 12 (Nmod)
  *   - pb-CpG-tools: 9 cols (with header) → uses cols 6 (cov), 7 (est_mod_count)
  *
- * Runs via Apptainer containers on Linux, WSL2, or macOS.
+ * Runs natively inside the bundled `dmrdetector` conda environment
+ * (see environment.yml).
  */
 
 // ============================================================================
@@ -38,23 +39,25 @@ def show_help() {
       nextflow run main.nf --input samplesheet.csv [options]
 
     Required:
-      --input           Samplesheet CSV (sample_id, type, meth_bed, vcf)
+      --input           Samplesheet CSV (sample_id, type, sex, meth_bed, vcf)
+                        type = CASE|CTRL; sex = M|F
 
     Optional:
-      --gtf             Ensembl GTF annotation file (auto-downloaded if not provided)
 
-    Optional panels:
-      --panel2          Optional second panel BED (headerless 3-col: CHROM, START, END)
+    Panels:
+      --icr_panel       ICR BED override (default: build from reference atlas)
+      --icr_gene_list   Imprinting gene candidate BED (default: assets/icr_gene_list.bed)
 
-    Optional (skip Stages 1-2):
+    Optional (skip or override panel/reference generation):
       --ref_atlas       Pre-built reference atlas (tsv.gz)
-      --cpg_panel       Pre-built CpG panel (bed)
+      --cpg_panel       Pre-built CpG island panel (bed)
 
     Chromosome coverage:
       --include_sex_chromosomes
                         Include sex-specific chrX/chrY analysis [default: true].
-                        v1.3 builds component atlases for autosomes, male_X,
-                        female_X, and Y. Use false for autosomes only.
+                        v2.0 builds component atlases for autosomes, non-PAR
+                        male_X, non-PAR female_X, and Y. Use false for
+                        autosomes only.
 
     Output:
       --outdir          Output directory [default: ./results]
@@ -171,85 +174,12 @@ process PREPROCESS_SAMPLE {
 }
 
 // ============================================================================
-// Process: INFER_SEX_FROM_VCF
-// ----------------------------------------------------------------------------
-// Counts heterozygous SNPs on non-PAR chrX. Males are hemizygous (HET count
-// near zero); females are diploid (thousands of HETs). Falls back to "U" for
-// ambiguous counts (low coverage, sex-chromosome aneuploidy, contamination).
-// Only runs when params.include_sex_chromosomes is true.
-// ============================================================================
-
-process INFER_SEX_FROM_VCF {
-    label 'light'
-    tag "${meta.id}"
-
-    input:
-        tuple val(meta), path(vcf)
-        path par_bed
-
-    output:
-        tuple val(meta), env(INFERRED_SEX), env(HET_COUNT), emit: sex_calls
-        path "${meta.id}_sex_inference.tsv",                emit: report
-
-    script:
-    """
-    #!/bin/bash
-    set -euo pipefail
-
-    # Index the VCF locally (never modify the input file)
-    if [[ "${vcf}" != *.vcf.gz ]]; then
-        bgzip -c "${vcf}" > tmp.vcf.gz
-    else
-        cp "${vcf}" tmp.vcf.gz
-    fi
-    tabix -f -p vcf tmp.vcf.gz
-
-    # Detect chrX naming in the VCF (chrX vs X)
-    CHR_X=\$(bcftools view -h tmp.vcf.gz \\
-        | awk '/^##contig=/' \\
-        | grep -oE 'ID=(chr)?X[,>]' \\
-        | head -1 \\
-        | sed -E 's/^ID=//; s/[,>]\$//' || true)
-    if [[ -z "\${CHR_X}" ]]; then CHR_X="chrX"; fi
-    echo "[INFER_SEX] chrX contig name: \${CHR_X}" >&2
-
-    # Count non-PAR chrX HET SNPs. bcftools view -r needs a tabixed VCF.
-    # We pipe to bedtools intersect -v against PAR to drop PAR SNPs.
-    HET_COUNT=\$(bcftools view -v snps -g het -r "\${CHR_X}" tmp.vcf.gz 2>/dev/null \\
-                 | bcftools query -f '%CHROM\\t%POS0\\t%POS\\n' \\
-                 | bedtools intersect -v -a - -b ${par_bed} \\
-                 | wc -l | tr -d ' ')
-    HET_COUNT=\${HET_COUNT:-0}
-
-    if [ "\${HET_COUNT}" -lt ${params.sex_het_threshold_male} ]; then
-        INFERRED_SEX="M"
-    elif [ "\${HET_COUNT}" -gt ${params.sex_het_threshold_female} ]; then
-        INFERRED_SEX="F"
-    else
-        INFERRED_SEX="U"
-    fi
-
-    printf "sample_id\\tnon_par_chrX_het_count\\tinferred_sex\\n" \\
-        > ${meta.id}_sex_inference.tsv
-    printf "${meta.id}\\t%s\\t%s\\n" "\${HET_COUNT}" "\${INFERRED_SEX}" \\
-        >> ${meta.id}_sex_inference.tsv
-
-    echo "[INFER_SEX] ${meta.id}: HET=\${HET_COUNT} -> \${INFERRED_SEX}" >&2
-
-    export INFERRED_SEX
-    export HET_COUNT
-
-    rm -f tmp.vcf.gz tmp.vcf.gz.tbi
-    """
-}
-
-// ============================================================================
 // Process: SPLIT_SEX_COMPONENTS
 // ----------------------------------------------------------------------------
 // Splits a preprocessed 5-col methylation BED into component files:
 //   - autosomal: chr1-22 only
-//   - chrX: full chrX, including PAR
-//   - chrY: full chrY, including PAR
+//   - chrX: non-PAR chrX only
+//   - chrY: full chrY
 // Only runs when params.include_sex_chromosomes is true.
 // ============================================================================
 
@@ -259,6 +189,7 @@ process SPLIT_SEX_COMPONENTS {
 
     input:
         tuple val(meta), path(bed)
+        path par_bed
 
     output:
         tuple val(meta),
@@ -271,21 +202,23 @@ process SPLIT_SEX_COMPONENTS {
     #!/bin/bash
     set -euo pipefail
 
-    # Autosomal rows (chr1-22 with optional 'chr' prefix); PAR stays with X/Y.
+    # Autosomal rows (chr1-22 with optional 'chr' prefix).
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?([0-9]+)\$/' \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
         > ${meta.id}_autosomal.bed.gz
 
-    # Full chrX, including PAR
+    # Non-PAR chrX. The bundled PAR BED contains both chr-prefixed and
+    # unprefixed contig names, so this works with either BED convention.
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?X\$/' \\
+        | bedtools intersect -v -a - -b ${par_bed} \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
         > ${meta.id}_chrX.bed.gz
 
-    # Full chrY, including PAR
+    # Full chrY. Y is handled as a male-specific exploratory component.
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?Y\$/' \\
         | sort -k1,1 -k2,2n \\
@@ -453,8 +386,17 @@ process SMOOTH_ATLAS {
     # Load data
     dt <- readRDS("${atlas_rds}")
     include_sex <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
-    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
-    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+    normalize_primary_chrom <- function(x) {
+        chrom <- as.character(x)
+        base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
+        primary <- base %in% c(as.character(1:22), "X", "Y")
+        chrom[primary] <- paste0("chr", base[primary])
+        chrom
+    }
+
+    allowed_chroms <- paste0("chr", 1:22)
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "chrX", "chrY")
+    dt[, CHROM := normalize_primary_chrom(CHROM)]
     dt <- dt[CHROM %in% allowed_chroms]
     if (nrow(dt) == 0) stop("No allowed chromosomes found (include_sex_chromosomes=", include_sex, ")")
     message(sprintf("Chromosome filter: include_sex_chromosomes=%s (%d chroms retained)",
@@ -508,15 +450,18 @@ process DETECT_CPG_ISLANDS {
     })
     setDTthreads(${task.cpus})
 
-    cat("=== Detect Hypomethylated CpG Islands ===\\n")
+    cat("=== Detect CpG Island Panel ===\\n")
 
     # Parameters
     min_samples  <- ${params.cpg_min_samples_per_site}
     core_max_meth <- ${params.cpg_core_max_methylation}
     core_max_phi  <- ${params.cpg_core_max_dispersion}
     shore_max_meth <- ${params.cpg_shore_max_methylation}
+    female_min_meth <- ${params.sex_f_ref_meth_min}
+    female_max_meth <- ${params.sex_f_ref_meth_max}
     max_gap       <- ${params.cpg_max_gap_distance}
     min_length    <- ${params.cpg_min_island_length}
+    scope         <- "${scope}"
 
     # Empty output helper
     write_empty <- function() {
@@ -534,15 +479,52 @@ process DETECT_CPG_ISLANDS {
     # Apply chromosome filter (handles the DMR-only case where a user-supplied
     # atlas may contain sex chromosomes that the current run wants to exclude)
     include_sex <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
-    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
-    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+    normalize_primary_chrom <- function(x) {
+        chrom <- as.character(x)
+        base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
+        primary <- base %in% c(as.character(1:22), "X", "Y")
+        chrom[primary] <- paste0("chr", base[primary])
+        chrom
+    }
+
+    allowed_chroms <- paste0("chr", 1:22)
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "chrX", "chrY")
     ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
     cat("  After chromosome filter (include_sex=", include_sex, "):", nrow(ref_atlas), "sites\\n")
 
     ref_atlas <- ref_atlas[N > min_samples]
     cat("  After N >", min_samples, "filter:", nrow(ref_atlas), "sites\\n")
 
-    # Step 2: CORE and SHORE sites
+    if (scope == "female_X") {
+        cat("  Female_X hemi-methylated model: REF_METH between",
+            female_min_meth, "and", female_max_meth, "\\n")
+        ref_atlas[, CORE := REF_METH >= female_min_meth & REF_METH <= female_max_meth]
+        n_core <- sum(ref_atlas\$CORE)
+        cat("  Hemi-methylated sites:", n_core, "\\n")
+        if (n_core == 0) { cat("No hemi-methylated sites. Empty output.\\n"); write_empty(); quit(save="no") }
+
+        ref_atlas[CORE == TRUE, island_id := {
+            d <- START - shift(START, fill = START[1])
+            cumsum(d > max_gap)
+        }, by = CHROM]
+
+        island_stats <- ref_atlas[CORE == TRUE, .(
+            START = min(START), END = max(START), NUM_CPG = .N
+        ), by = .(CHROM, island_id)]
+        island_stats[, LENGTH := END - START + 1]
+        island_stats <- island_stats[LENGTH >= min_length]
+        cat("  Islands after filtering:", nrow(island_stats), "\\n")
+        if (nrow(island_stats) == 0) { write_empty(); quit(save="no") }
+
+        island_stats[, `:=`(START_EXTEND = START, END_EXTEND = END)]
+        result <- island_stats[, .(CHROM, START, END, START_EXTEND, END_EXTEND, LENGTH, NUM_CPG)]
+        result <- result[order(CHROM, START)]
+        fwrite(result, "${out_file}", sep = "\\t", col.names = TRUE)
+        cat("Total islands:", nrow(result), "\\n")
+        quit(save="no")
+    }
+
+    # Step 2: CORE and SHORE sites for autosomal, male_X, and Y scopes
     ref_atlas[, CORE := REF_METH < core_max_meth & PHI < core_max_phi]
     n_core <- sum(ref_atlas\$CORE)
     cat("  CORE sites:", n_core, "\\n")
@@ -594,21 +576,22 @@ process DETECT_CPG_ISLANDS {
     """
 }
 
-// Process: PARSE_GTF
-// ----------------------------------------------------------------------------
-// Runs once per pipeline. Parses the Ensembl GTF into a slim gene-annotation
-// table used downstream for DMR gene overlap. Avoids re-parsing the GTF for
-// every CASE sample.
+// ============================================================================
+// Process: DETECT_ICR_REGIONS
 // ============================================================================
 
-process PARSE_GTF {
-    label 'light'
+process DETECT_ICR_REGIONS {
+    label 'medium'
+    tag "${scope}"
 
     input:
-        path gtf_file
+        tuple val(scope), path(ref_atlas), path(icr_gene_list)
 
     output:
-        path "gene_annot.tsv.gz", emit: gene_annot
+        tuple val(scope), path("icr_region.bed"), emit: icr_bed
+
+    when:
+        scope == 'autosomal'
 
     script:
     """
@@ -616,7 +599,13 @@ process PARSE_GTF {
     suppressPackageStartupMessages(library(data.table))
     setDTthreads(${task.cpus})
 
-    include_sex <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
+    cat("=== Detect Imprinted Control Regions (ICR) ===\\n")
+
+    ref_lo <- ${params.icr_ref_meth_min}
+    ref_hi <- ${params.icr_ref_meth_max}
+    min_sites <- ${params.icr_min_sites}
+    merge_distance <- ${params.dmr_merge_distance}
+
     normalize_primary_chrom <- function(x) {
         chrom <- as.character(x)
         base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
@@ -625,32 +614,75 @@ process PARSE_GTF {
         chrom
     }
 
-    allowed_chroms <- paste0("chr", 1:22)
-    if (include_sex) allowed_chroms <- c(allowed_chroms, "chrX", "chrY")
+    write_empty <- function() {
+        fwrite(data.table(CHROM=character(), START=integer(), END=integer(),
+                          GENE=character(), ICR_ID=character(), NUM_CPG=integer()),
+               "icr_region.bed", sep="\\t", col.names=TRUE)
+    }
 
-    message("Parsing GTF...")
-    gtf <- fread(cmd = sprintf("zcat %s | grep -v '^#'", "${gtf_file}"),
-                 sep = "\\t", header = FALSE,
-                 col.names = c("CHROM","source","feature","start","end",
-                               "score","strand","frame","attributes"))
-    gtf <- gtf[feature == "gene"]
-    gtf[, CHROM := normalize_primary_chrom(CHROM)]
-    gtf <- gtf[CHROM %in% allowed_chroms]
-    gtf[, gene_name := sub('.*gene_name "([^"]+)".*', "\\\\1", attributes)]
-    gtf[, gene_biotype := sub('.*gene_biotype "([^"]+)".*', "\\\\1", attributes)]
-    biotype_priority <- c("protein_coding" = 1L, "lncRNA" = 2L, "processed_pseudogene" = 3L)
-    gtf[, priority := fifelse(gene_biotype %in% names(biotype_priority),
-                              biotype_priority[gene_biotype], 99L)]
-    setnames(gtf, c("start","end"), c("gene_start","gene_end"))
-    out <- gtf[, .(CHROM, gene_start, gene_end, gene_name, priority)]
-    setorder(out, CHROM, gene_start)
+    candidates <- fread("${icr_gene_list}")
+    candidates <- candidates[, 1:min(4, ncol(candidates)), with = FALSE]
+    setnames(candidates, c("CHROM", "START", "END", "GENE"))
+    candidates[, CHROM := normalize_primary_chrom(CHROM)]
+    candidates <- candidates[CHROM %in% paste0("chr", 1:22)]
+    candidates[, `:=`(START = as.integer(START), END = as.integer(END))]
+    if (nrow(candidates) == 0) {
+        cat("No autosomal imprinting gene candidates. Empty output.\\n")
+        write_empty()
+        quit(save="no")
+    }
 
-    fwrite(out, "gene_annot.tsv.gz", sep = "\\t")
-    message(sprintf("Wrote %d gene records (include_sex=%s)", nrow(out), include_sex))
+    atlas <- fread(cmd = sprintf("zcat %s", "${ref_atlas}"),
+                   select = c("CHROM", "START", "END", "N", "REF_METH"))
+    atlas[, CHROM := normalize_primary_chrom(CHROM)]
+    atlas <- atlas[CHROM %in% paste0("chr", 1:22)]
+    atlas[, `:=`(START = as.integer(START), END = as.integer(END))]
+    atlas <- atlas[N >= ${params.cpg_min_samples_per_site}]
+    if (nrow(atlas) == 0) {
+        cat("No autosomal atlas sites after filtering. Empty output.\\n")
+        write_empty()
+        quit(save="no")
+    }
+
+    setkey(candidates, CHROM, START, END)
+    setkey(atlas, CHROM, START, END)
+    hemi <- foverlaps(atlas, candidates, nomatch = NULL)[
+        REF_METH >= ref_lo & REF_METH <= ref_hi,
+        .(CHROM, START = i.START, GENE)
+    ]
+    cat("  Hemi-methylated ICR CpGs:", nrow(hemi), "\\n")
+    if (nrow(hemi) == 0) {
+        write_empty()
+        quit(save="no")
+    }
+
+    setorder(hemi, GENE, CHROM, START)
+    hemi[, cluster := {
+        gaps <- c(Inf, diff(START))
+        cumsum(gaps > merge_distance)
+    }, by = .(GENE, CHROM)]
+
+    icr <- hemi[, .(
+        START = min(START),
+        END = max(START) + 1L,
+        NUM_CPG = .N
+    ), by = .(GENE, CHROM, cluster)]
+    icr <- icr[NUM_CPG >= min_sites]
+    if (nrow(icr) == 0) {
+        cat("No ICR passed min_sites. Empty output.\\n")
+        write_empty()
+        quit(save="no")
+    }
+
+    setorder(icr, CHROM, START, GENE)
+    icr[, ICR_ID := paste(GENE, CHROM, sprintf("icr%02d", seq_len(.N)), sep = "_"),
+        by = .(GENE, CHROM)]
+    out <- icr[, .(CHROM, START, END, GENE, ICR_ID, NUM_CPG)]
+    fwrite(out, "icr_region.bed", sep="\\t", col.names=TRUE)
+    cat("Total ICRs:", nrow(out), "across", uniqueN(out\$GENE), "genes\\n")
     """
 }
 
-// ============================================================================
 // Process: CALL_DMR
 // ----------------------------------------------------------------------------
 // Per-sample DMR calling: merges the sample with the reference atlas, finds
@@ -666,14 +698,13 @@ process CALL_DMR {
         tuple val(meta), path(sample_bed), path(ref_atlas), path(cpg_panel),
               val(panel_scope), val(diff_threshold), val(min_sites),
               val(ref_meth_min), val(ref_meth_max)
-        path panel2
+        path icr_panel
 
     output:
         tuple val(meta), path("dmr_raw_${meta.id}_${meta.type}_${panel_scope}.tsv.gz"), optional: true
 
     script:
-    def has_panel2     = panel2.name != 'NO_FILE'
-    def run_panel2     = has_panel2 && panel_scope == 'autosomal'
+    def run_icr = panel_scope == 'autosomal'
     """
     #!/usr/bin/env Rscript
     suppressPackageStartupMessages(library(data.table))
@@ -687,16 +718,24 @@ process CALL_DMR {
     cpg_min_sites         <- ${min_sites}
     ref_meth_min          <- ${ref_meth_min}
     ref_meth_max          <- ${ref_meth_max}
-    panel2_diff_threshold <- ${params.panel2_diff_threshold}
+    icr_diff_threshold    <- ${params.icr_diff_threshold}
     merge_distance        <- ${params.dmr_merge_distance}
     fdr_threshold         <- ${params.dmr_fdr_threshold}
-    panel2_min_sites      <- ${params.panel2_min_sites}
-    run_panel2            <- ${run_panel2 ? 'TRUE' : 'FALSE'}
+    icr_min_sites         <- ${params.icr_min_sites}
+    run_icr               <- ${run_icr ? 'TRUE' : 'FALSE'}
     include_sex           <- ${params.include_sex_chromosomes ? 'TRUE' : 'FALSE'}
     output_file <- "dmr_raw_${meta.id}_${meta.type}_${panel_scope}.tsv.gz"
 
-    allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
-    if (include_sex) allowed_chroms <- c(allowed_chroms, "X", "Y", "chrX", "chrY")
+    normalize_primary_chrom <- function(x) {
+        chrom <- as.character(x)
+        base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
+        primary <- base %in% c(as.character(1:22), "X", "Y")
+        chrom[primary] <- paste0("chr", base[primary])
+        chrom
+    }
+
+    allowed_chroms <- paste0("chr", 1:22)
+    if (include_sex) allowed_chroms <- c(allowed_chroms, "chrX", "chrY")
 
     message(sprintf("Processing sample: %s (%s) | scope=%s | diff>%.2f | ref_meth [%.2f, %.2f]",
                     sample_id, sample_type, panel_scope,
@@ -764,23 +803,24 @@ process CALL_DMR {
     message("Loading sample data...")
     sample_data <- fread(cmd = sprintf("zcat %s", "${sample_bed}"),
                          col.names = c("CHROM", "START", "END", "COVERAGE", "N_METH"))
-    sample_data[, CHROM := as.character(CHROM)]
+    sample_data[, CHROM := normalize_primary_chrom(CHROM)]
     sample_data <- sample_data[CHROM %in% allowed_chroms]
     sample_data[, SAMPLE_METH := N_METH / COVERAGE]
 
     message("Loading reference atlas...")
     ref_atlas <- fread(cmd = sprintf("zcat %s", "${ref_atlas}"),
                        select = c("CHROM", "START", "END", "REF_METH", "REF_VAR"))
-    ref_atlas[, CHROM := as.character(CHROM)]
+    ref_atlas[, CHROM := normalize_primary_chrom(CHROM)]
     ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
-    # Restrict atlas to the expected REF_METH band. v1.3 component scopes use
-    # [0, 1] by default; the bounds are retained for compatibility.
+    # Restrict atlas to the expected REF_METH band. v2.0 component scopes use
+    # [0, 1] for DMR calling by default; female_X island selection happens
+    # upstream in DETECT_CPG_ISLANDS.
     ref_atlas <- ref_atlas[REF_METH >= ref_meth_min & REF_METH <= ref_meth_max]
     message(sprintf("  Atlas after REF_METH filter: %d sites", nrow(ref_atlas)))
 
     message("Loading CpG panel...")
     cpg_panel <- fread("${cpg_panel}")
-    cpg_panel[, CHROM := as.character(CHROM)]
+    cpg_panel[, CHROM := normalize_primary_chrom(CHROM)]
     cpg_panel <- cpg_panel[CHROM %in% allowed_chroms]
     # Ensure integer types for foverlaps (needed when panel is empty/header-only)
     for (col in c("START","END","START_EXTEND","END_EXTEND","LENGTH","NUM_CPG")) {
@@ -809,19 +849,21 @@ process CALL_DMR {
         cpg_dmrs[, DIRECTION := fifelse(MEAN_DIFF > 0, "hyper", "hypo")]
     }
 
-    # ---- Panel2 (optional): merge within each region separately ----
-    # ICR/panel2 analysis is autosomal only in v1.3; X/Y panel rows are dropped.
-    if (run_panel2) {
-        message("Processing panel2...")
-        panel2_dt <- fread("${panel2}", header = FALSE, col.names = c("CHROM", "START", "END"))
-        panel2_dt[, CHROM := as.character(CHROM)]
-        panel2_allowed_chroms <- c(as.character(1:22), paste0("chr", 1:22))
-        panel2_dt <- panel2_dt[CHROM %in% panel2_allowed_chroms]
-        p2_sites    <- find_sites_in_regions(merged, panel2_dt, "START", "END")
-        p2_filtered <- p2_sites[abs(DIFF) > panel2_diff_threshold]
+    # ---- ICR panel: autosomal only; X/Y rows are ignored if present. ----
+    if (run_icr) {
+        message("Processing ICR panel...")
+        icr_dt <- fread("${icr_panel}")
+        icr_dt <- icr_dt[, 1:min(3, ncol(icr_dt)), with = FALSE]
+        setnames(icr_dt, c("CHROM", "START", "END"))
+        icr_dt[, CHROM := normalize_primary_chrom(CHROM)]
+        panel_allowed_chroms <- paste0("chr", 1:22)
+        icr_dt <- icr_dt[CHROM %in% panel_allowed_chroms]
+        for (col in c("START", "END")) icr_dt[, (col) := as.integer(get(col))]
+        icr_sites    <- find_sites_in_regions(merged, icr_dt, "START", "END")
+        icr_filtered <- icr_sites[abs(DIFF) > icr_diff_threshold]
 
-        if (nrow(p2_filtered) > 0) {
-            p2_merged <- p2_filtered[, {
+        if (nrow(icr_filtered) > 0) {
+            icr_merged <- icr_filtered[, {
                 dt <- copy(.SD); setorder(dt, START)
                 dt[, gap := c(Inf, diff(START))]
                 dt[, cluster := cumsum(gap > merge_distance)]
@@ -832,24 +874,24 @@ process CALL_DMR {
                        MEAN_DIFF = mean(DIFF, na.rm = TRUE),
                        DIFF_VALUES = list(DIFF)), by = cluster][, cluster := NULL]
             }, by = .(CHROM, REGION_START, REGION_END)]
-            p2_merged[, c("REGION_START", "REGION_END") := NULL]
+            icr_merged[, c("REGION_START", "REGION_END") := NULL]
         } else {
-            p2_merged <- data.table()
+            icr_merged <- data.table()
         }
-        p2_dmrs <- finalise_dmrs(p2_merged, fdr_threshold, panel2_min_sites)
-        message(sprintf("  Panel2 DMRs: %d (from %d sites)", nrow(p2_dmrs), nrow(p2_sites)))
-        if (nrow(p2_dmrs) > 0) {
-            p2_dmrs[, PANEL := "Panel2"]
-            p2_dmrs[, DIRECTION := fifelse(MEAN_DIFF > 0, "hyper", "hypo")]
+        icr_dmrs <- finalise_dmrs(icr_merged, fdr_threshold, icr_min_sites)
+        message(sprintf("  ICR DMRs: %d (from %d sites)", nrow(icr_dmrs), nrow(icr_sites)))
+        if (nrow(icr_dmrs) > 0) {
+            icr_dmrs[, PANEL := "ICR"]
+            icr_dmrs[, DIRECTION := fifelse(MEAN_DIFF > 0, "hyper", "hypo")]
         }
     } else {
-        p2_dmrs <- data.table()
+        icr_dmrs <- data.table()
     }
 
     # ---- Combine and emit raw (unannotated) DMRs ----
     raw_cols <- c("CHROM","START","END","PANEL","PANEL_SCOPE","NUM_CPG","NUM_READS",
                   "MEAN_SAMPLE","MEAN_REF","MEAN_DIFF","P_VALUE","P_FDR","DIRECTION")
-    all_dmrs <- rbindlist(list(cpg_dmrs, p2_dmrs), use.names = TRUE, fill = TRUE)
+    all_dmrs <- rbindlist(list(cpg_dmrs, icr_dmrs), use.names = TRUE, fill = TRUE)
     if (nrow(all_dmrs) > 0) {
         all_dmrs[, PANEL_SCOPE := panel_scope]
         for (col in raw_cols) if (!col %in% names(all_dmrs)) all_dmrs[, (col) := NA]
@@ -867,8 +909,8 @@ process CALL_DMR {
             P_VALUE = numeric(), P_FDR = numeric(), DIRECTION = character())
     }
 
-    message(sprintf("Total DMRs: %d (CpG: %d, Panel2: %d)",
-                    nrow(all_dmrs), nrow(cpg_dmrs), nrow(p2_dmrs)))
+    message(sprintf("Total DMRs: %d (CpG: %d, ICR: %d)",
+                    nrow(all_dmrs), nrow(cpg_dmrs), nrow(icr_dmrs)))
     fwrite(all_dmrs, output_file, sep = "\\t", quote = FALSE)
     """
 }
@@ -886,31 +928,25 @@ process ANNOTATE_DMRS {
 
     input:
         tuple val(meta), path(dmr_raws)
-        path gene_annot
 
     output:
         path "dmr_${meta.id}_${meta.type}.tsv", optional: true
 
     script:
-    def include_sex = params.include_sex_chromosomes ? 'TRUE' : 'FALSE'
     """
     #!/usr/bin/env Rscript
-    suppressPackageStartupMessages(library(data.table))
+    suppressPackageStartupMessages({
+        library(data.table)
+        library(ensembldb)
+        library(EnsDb.Hsapiens.v86)
+        library(GenomicRanges)
+    })
     setDTthreads(${task.cpus})
 
-    include_sex <- ${include_sex}
-    message(sprintf("Annotating DMRs for %s (%s) | include_sex=%s",
-                    "${meta.id}", "${meta.type}", include_sex))
+    message(sprintf("Annotating DMRs for %s (%s) via EnsDb.Hsapiens.v86",
+                    "${meta.id}", "${meta.type}"))
 
-    normalize_primary_chrom <- function(x) {
-        chrom <- as.character(x)
-        base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
-        primary <- base %in% c(as.character(1:22), "X", "Y")
-        chrom[primary] <- paste0("chr", base[primary])
-        chrom
-    }
-
-    # Each staged file is dmr_raw_<id>_<type>_<scope>.tsv.gz; gather them all
+    # --- Gather raw DMR files ---
     raw_files <- list.files(".",
         pattern = "^dmr_raw_${meta.id}_${meta.type}_.*\\\\.tsv\\\\.gz\$",
         full.names = TRUE)
@@ -921,93 +957,93 @@ process ANNOTATE_DMRS {
                     length(raw_files),
                     paste(basename(raw_files), collapse = ", ")))
 
-    dmr_list <- lapply(raw_files, fread)
-    dmrs <- rbindlist(dmr_list, use.names = TRUE, fill = TRUE)
-    if (nrow(dmrs) > 0) dmrs[, CHROM := normalize_primary_chrom(CHROM)]
+    dmrs <- rbindlist(lapply(raw_files, fread), use.names = TRUE, fill = TRUE)
 
-    gtf <- fread("${gene_annot}")
-    gtf[, CHROM := normalize_primary_chrom(CHROM)]
+    # --- Final output schema ---
+    output_cols  <- c("CHROM","START","END","GENE","PANEL","NUM_CPG","NUM_READS",
+                      "MEAN_SAMPLE","MEAN_REF","MEAN_DIFF","P_VALUE","P_FDR","DIRECTION")
+    output_names <- c("CHROM","START","END","GENE","PANEL","NUM_CPG","NUM_READS",
+                      "SAMPLE_METH (%)","REF_METH (%)","DIFF (%)","P_VALUE","P_FDR","DIRECTION")
+    out_file <- "dmr_${meta.id}_${meta.type}.tsv"
 
-    annotate_genes <- function(regions, gtf) {
-        if (nrow(regions) == 0) { regions[, GENE := character()]; return(regions) }
-        gtf_dt <- copy(gtf)
-        setkey(gtf_dt, CHROM, gene_start, gene_end)
-        regions_dt <- copy(regions)
-        regions_dt[, REGION_ID := .I]
-        setnames(regions_dt, c("START", "END"), c("region_start", "region_end"))
-        overlaps <- foverlaps(regions_dt, gtf_dt,
-                              by.x = c("CHROM", "region_start", "region_end"),
-                              by.y = c("CHROM", "gene_start", "gene_end"),
-                              nomatch = NA)
-        gene_annot <- overlaps[, .(GENE = {
-            valid <- !is.na(gene_name)
-            if (!any(valid)) NA_character_ else gene_name[valid][which.min(priority[valid])]
-        }), by = REGION_ID]
-        setnames(regions_dt, c("region_start", "region_end"), c("START", "END"))
-        regions_dt <- merge(regions_dt, gene_annot, by = "REGION_ID", sort = FALSE)
-        regions_dt[, REGION_ID := NULL]
-        regions_dt
+    if (nrow(dmrs) == 0) {
+        empty <- setNames(data.table::setDT(setNames(replicate(length(output_cols), character(), simplify=FALSE),
+                                                     output_cols))[0], output_names)
+        fwrite(empty, out_file, sep = "\\t", quote = FALSE)
+        message("No DMRs to annotate; wrote empty TSV.")
+        quit(save = "no", status = 0)
     }
 
-    if (nrow(dmrs) > 0) dmrs <- annotate_genes(dmrs, gtf)
-    if (!"GENE" %in% names(dmrs)) dmrs[, GENE := NA_character_]
-
-    # PANEL_SCOPE is carried through every raw DMR file, but only exposed in the
-    # final TSV when sex branches are active. Dropping it for toggle=false
-    # preserves byte-identical output vs. the pre-feature pipeline.
-    if (include_sex) {
-        output_cols  <- c("CHROM","START","END","GENE","PANEL","PANEL_SCOPE",
-                          "NUM_CPG","NUM_READS","MEAN_SAMPLE","MEAN_REF","MEAN_DIFF",
-                          "P_VALUE","P_FDR","DIRECTION")
-        output_names <- c("CHROM","START","END","GENE","PANEL","PANEL_SCOPE",
-                          "NUM_CPG","NUM_READS","SAMPLE_METH (%)","REF_METH (%)","DIFF (%)",
-                          "P_VALUE","P_FDR","DIRECTION")
-    } else {
-        output_cols  <- c("CHROM","START","END","GENE","PANEL","NUM_CPG","NUM_READS",
-                          "MEAN_SAMPLE","MEAN_REF","MEAN_DIFF","P_VALUE","P_FDR","DIRECTION")
-        output_names <- c("CHROM","START","END","GENE","PANEL","NUM_CPG","NUM_READS",
-                          "SAMPLE_METH (%)","REF_METH (%)","DIFF (%)","P_VALUE","P_FDR","DIRECTION")
+    normalize_primary_chrom <- function(x) {
+        chrom <- as.character(x)
+        base <- toupper(sub("^chr", "", chrom, ignore.case = TRUE))
+        primary <- base %in% c(as.character(1:22), "X", "Y")
+        chrom[primary] <- paste0("chr", base[primary])
+        chrom
     }
+    dmrs[, CHROM := normalize_primary_chrom(CHROM)]
+
+    # --- Cache EnsDb gene GRanges + biotype-priority rank ---
+    .genes_gr <- genes(EnsDb.Hsapiens.v86,
+                       columns = c("gene_id", "gene_name", "gene_biotype"),
+                       return.type = "GRanges")
+    .symbol_lookup <- ifelse(
+        !is.na(.genes_gr\$gene_name) & nzchar(.genes_gr\$gene_name),
+        .genes_gr\$gene_name,
+        ifelse(!is.na(.genes_gr\$gene_id), .genes_gr\$gene_id, "")
+    )
+    .biotype_rank <- c(
+        protein_coding = 1L,
+        IG_C_gene = 2L, IG_D_gene = 2L, IG_J_gene = 2L, IG_V_gene = 2L,
+        TR_C_gene = 2L, TR_D_gene = 2L, TR_J_gene = 2L, TR_V_gene = 2L,
+        lncRNA = 3L, lincRNA = 3L, antisense = 3L,
+        miRNA = 4L,
+        snoRNA = 5L, snRNA = 5L,
+        rRNA = 6L,
+        Mt_tRNA = 7L, Mt_rRNA = 7L,
+        misc_RNA = 8L,
+        processed_transcript = 9L,
+        pseudogene = 10L, processed_pseudogene = 10L, unprocessed_pseudogene = 10L,
+        transcribed_processed_pseudogene = 10L, transcribed_unprocessed_pseudogene = 10L,
+        IG_pseudogene = 10L, TR_pseudogene = 10L
+    )
+    .gene_rank <- {
+        r <- .biotype_rank[.genes_gr\$gene_biotype]
+        r[is.na(r)] <- 99L
+        unname(r)
+    }
+
+    # --- Vectorised lookup: best gene per query (rank → overlap → length) ---
+    q <- GRanges(as.character(dmrs\$CHROM),
+                 IRanges(start = dmrs\$START, end = dmrs\$END))
+    seqlevelsStyle(q) <- "Ensembl"
+    hits <- findOverlaps(q, .genes_gr)
+
+    gene_vec <- rep(NA_character_, length(q))
+    if (length(hits) > 0L) {
+        qh <- queryHits(hits); sh <- subjectHits(hits)
+        ov_width <- width(pintersect(q[qh], .genes_gr[sh]))
+        gene_len <- width(.genes_gr)[sh]
+        rk       <- .gene_rank[sh]
+        ord <- order(qh, rk, -ov_width, -gene_len)
+        qh_o <- qh[ord]; sh_o <- sh[ord]
+        best <- !duplicated(qh_o)
+        gene_vec[qh_o[best]] <- .symbol_lookup[sh_o[best]]
+    }
+    dmrs[, GENE := gene_vec]
+
+    # --- Final formatting + write ---
     for (col in output_cols) if (!col %in% names(dmrs)) dmrs[, (col) := NA]
     dmrs <- dmrs[, ..output_cols]
-    if (nrow(dmrs) > 0) {
-        dmrs[, NUM_READS   := round(NUM_READS)]
-        dmrs[, MEAN_SAMPLE := round(MEAN_SAMPLE * 100, 1)]
-        dmrs[, MEAN_REF    := round(MEAN_REF * 100, 1)]
-        dmrs[, MEAN_DIFF   := round(MEAN_DIFF * 100, 1)]
-    }
+    dmrs[, NUM_READS   := round(NUM_READS)]
+    dmrs[, MEAN_SAMPLE := round(MEAN_SAMPLE * 100, 1)]
+    dmrs[, MEAN_REF    := round(MEAN_REF * 100, 1)]
+    dmrs[, MEAN_DIFF   := round(MEAN_DIFF * 100, 1)]
     setnames(dmrs, output_cols, output_names)
     setorder(dmrs, CHROM, START)
 
-    out_file <- "dmr_${meta.id}_${meta.type}.tsv"
     fwrite(dmrs, out_file, sep = "\\t", quote = FALSE)
     message(sprintf("Wrote %d annotated DMRs to %s", nrow(dmrs), out_file))
-    """
-}
-
-// ============================================================================
-// Process: DOWNLOAD_GTF
-// ============================================================================
-
-process DOWNLOAD_GTF {
-    label 'light'
-
-    output:
-        path "*.gtf.gz", emit: gtf
-
-    script:
-    """
-    #!/bin/bash
-    set -euo pipefail
-
-    # Fetch the latest Ensembl release number
-    RELEASE=\$(wget -qO- 'https://rest.ensembl.org/info/data/?content-type=application/json' \
-        | grep -oP '"releases":\\[\\K[0-9]+')
-    echo "Latest Ensembl release: \${RELEASE}" >&2
-
-    URL="https://ftp.ensembl.org/pub/release-\${RELEASE}/gtf/homo_sapiens/Homo_sapiens.GRCh38.\${RELEASE}.gtf.gz"
-    echo "Downloading: \${URL}" >&2
-    wget -q "\${URL}"
     """
 }
 
@@ -1016,11 +1052,12 @@ process DOWNLOAD_GTF {
 // ============================================================================
 
 def parse_samplesheet(csv_file) {
-    // Eagerly validate header, type values, and duplicate sample_ids before the
-    // channel is consumed — catches user errors at launch instead of deep in a
-    // process execution.
-    def required_cols = ['sample_id', 'type', 'meth_bed', 'vcf']
+    // Eagerly validate header, type values, sex values, and duplicate sample_ids
+    // before the channel is consumed — catches user errors at launch instead of
+    // deep in a process execution.
+    def required_cols = ['sample_id', 'type', 'sex', 'meth_bed', 'vcf']
     def allowed_types = ['case', 'ctrl']
+    def allowed_sexes = ['m', 'f']
     def sheet = file(csv_file, checkIfExists: true)
     def lines = sheet.readLines()
     if (lines.isEmpty()) {
@@ -1048,6 +1085,9 @@ def parse_samplesheet(csv_file) {
         if (!(row.type?.toLowerCase() in allowed_types)) {
             error "ERROR: samplesheet row ${row_n} (sample_id=${row.sample_id}): type must be CASE or CTRL, got '${row.type}'"
         }
+        if (!(row.sex?.toLowerCase() in allowed_sexes)) {
+            error "ERROR: samplesheet row ${row_n} (sample_id=${row.sample_id}): sex must be M or F, got '${row.sex}'"
+        }
     }
 
     return channel.fromPath(csv_file, checkIfExists: true)
@@ -1055,7 +1095,8 @@ def parse_samplesheet(csv_file) {
         .map { row ->
             def meta = [
                 id:    row.sample_id,
-                type:  row.type.toLowerCase()
+                type:  row.type.toLowerCase(),
+                sex:   row.sex.toUpperCase()
             ]
             def meth_bed = file(row.meth_bed, checkIfExists: true)
             def vcf      = file(row.vcf, checkIfExists: true)
@@ -1072,11 +1113,11 @@ workflow {
 
     ch_input = parse_samplesheet(params.input)
 
-    // Optional panel2 (value channel — reused across samples; only applied to
-    // the autosomal scope by CALL_DMR)
-    ch_panel2 = params.panel2
-        ? channel.value(file(params.panel2, checkIfExists: true))
-        : channel.value(file("${projectDir}/assets/NO_FILE"))
+    ch_icr_gene_list = channel.value(
+        params.icr_gene_list
+            ? file(params.icr_gene_list, checkIfExists: true)
+            : file("${projectDir}/assets/icr_gene_list.bed", checkIfExists: true)
+    )
 
     // Execution mode flags
     def build_atlas_mode = !params.ref_atlas
@@ -1095,14 +1136,6 @@ workflow {
 
     ch_all_preprocessed = PREPROCESS_SAMPLE(ch_input, min_cov)
 
-    // GTF: use provided file or auto-download from Ensembl
-    if (params.gtf) {
-        ch_gtf = channel.value(file(params.gtf, checkIfExists: true))
-    } else {
-        ch_gtf = DOWNLOAD_GTF().gtf
-    }
-    ch_gene_annot = PARSE_GTF(ch_gtf).gene_annot.collect().map { files -> files[0] }
-
     // ====================================================================
     // Build per-scope CTRL bed channel (input to BUILD_ATLAS) and per-scope
     // CASE bed channel (input to CALL_DMR).
@@ -1114,58 +1147,13 @@ workflow {
     if (use_sex_branches) {
         def par_bed_file = params.par_bed
             ? file(params.par_bed, checkIfExists: true)
-            : file("${projectDir}/assets/par_${params.genome_build}.bed", checkIfExists: true)
+            : file("${projectDir}/assets/par_hg38.bed", checkIfExists: true)
         ch_par_bed = channel.value(par_bed_file)
 
-        // Optional manual sex override TSV — read once at workflow start.
-        def sex_override_map = [:]
-        if (params.sex_override_tsv) {
-            file(params.sex_override_tsv, checkIfExists: true).eachLine { line ->
-                def trimmed = line.trim()
-                if (!trimmed || trimmed.startsWith('#')) return
-                def tok = trimmed.split(/[\s,\t]+/)
-                if (tok.size() >= 2 && tok[0].toLowerCase() != 'sample_id') {
-                    sex_override_map[tok[0]] = tok[1].toUpperCase()
-                }
-            }
-            log.info "Loaded ${sex_override_map.size()} sample(s) from sex_override_tsv"
-        }
-
-        // Infer sex from VCF HET count on non-PAR chrX
-        ch_vcf_pairs = ch_input.map { meta, _bed, vcf -> [meta, vcf] }
-        INFER_SEX_FROM_VCF(ch_vcf_pairs, ch_par_bed)
-
-        // Enrich meta with sex / het_count / sex_source, keyed by sample_id
-        ch_sex_by_id = INFER_SEX_FROM_VCF.out.sex_calls
-            .map { meta, inferred_sex, het_count ->
-                def overridden = sex_override_map.containsKey(meta.id)
-                def final_sex = overridden ? sex_override_map[meta.id] : inferred_sex
-                def new_meta = meta + [
-                    sex: final_sex,
-                    het_count: (het_count as String).isInteger() ? (het_count as Integer) : 0,
-                    sex_source: overridden ? 'override' : 'inferred'
-                ]
-                [meta.id, new_meta]
-            }
-
-        // Join sex info into the preprocessed channel (meta gains sex fields)
-        ch_preprocessed_with_sex = ch_all_preprocessed
-            .map { meta, bed -> [meta.id, meta, bed] }
-            .join(ch_sex_by_id)
-            .map { row ->
-                def meta_with_sex = row.find { it instanceof Map && it.containsKey('sex') }
-                def bed = row.find { !(it instanceof Map) && it.toString().endsWith('_filtered.bed.gz') }
-                if (!meta_with_sex) {
-                    error "ERROR: failed to attach sex metadata for preprocessed sample ${row[0]}"
-                }
-                if (!bed) {
-                    error "ERROR: failed to attach preprocessed BED for sample ${row[0]}"
-                }
-                [meta_with_sex, bed]
-            }
-
-        // Split each preprocessed BED into chr1-22 / full chrX / full chrY.
-        ch_split = SPLIT_SEX_COMPONENTS(ch_preprocessed_with_sex)
+        // Sex is supplied per sample in the samplesheet (M/F) and already
+        // attached to meta by parse_samplesheet. Split each preprocessed BED
+        // into chr1-22 / non-PAR chrX / chrY using meta.sex.
+        ch_split = SPLIT_SEX_COMPONENTS(ch_all_preprocessed, ch_par_bed)
 
         // ---- Per-scope CTRL beds for atlas building ----
         ch_ctrl_autosomal = ch_split
@@ -1222,14 +1210,6 @@ workflow {
             .mix(ch_case_female_X)
             .mix(ch_case_Y)
 
-        // Persist per-sample sex inference reports for review
-        INFER_SEX_FROM_VCF.out.report
-            .collectFile(
-                name:      'sex_inference_summary.tsv',
-                storeDir:  "${params.outdir}/pipeline_info",
-                keepHeader: true,
-                skip:       1
-            )
     } else {
         // Autosomal-only: single 'autosomal' scope
         ch_build_atlas_input = ch_all_preprocessed
@@ -1260,27 +1240,37 @@ workflow {
             .filter { _scope, sigma, _f -> (sigma as int) == (params.smooth_sigma_narrow as int) }
             .map    { scope, _sigma, f -> [scope, f] }
 
-        // v1.3 uses male-derived CpG island panels only. female_X DMRs reuse
-        // the male_X CpG panel but compare against the female_X atlas.
-        ch_cpg_male_derived_in = ch_narrow_atlas_by_scope
-            .filter { scope, _f -> scope in ['autosomal', 'male_X', 'Y'] }
-
-        ch_cpg_male_derived_out = DETECT_CPG_ISLANDS(ch_cpg_male_derived_in)
-
-        ch_cpg_panels_by_scope = ch_cpg_male_derived_out.cpg_bed
-            .mix(
-                ch_cpg_male_derived_out.cpg_bed
-                    .filter { scope, _f -> scope == 'male_X' }
-                    .map    { _scope, f -> ['female_X', f] }
-            )
+        // v2.0 builds CpG panels per biological scope. female_X uses a
+        // hemi-methylated island model inside DETECT_CPG_ISLANDS.
+        ch_cpg_panels_by_scope = DETECT_CPG_ISLANDS(ch_narrow_atlas_by_scope).cpg_bed
+        if (params.icr_panel) {
+            ch_icr_panel = channel.value(file(params.icr_panel, checkIfExists: true))
+        } else {
+            ch_icr_panel = DETECT_ICR_REGIONS(
+                ch_narrow_atlas_by_scope
+                    .filter { scope, _f -> scope == 'autosomal' }
+                    .combine(ch_icr_gene_list)
+            ).icr_bed.map { _scope, f -> f }.collect().map { files -> files[0] }
+        }
     } else {
         // Skip mode: user-provided references (autosomal only).
         ch_narrow_atlas_by_scope = channel.of(
             ['autosomal', file(params.ref_atlas, checkIfExists: true)]
         )
-        ch_cpg_panels_by_scope = channel.of(
-            ['autosomal', file(params.cpg_panel, checkIfExists: true)]
-        )
+        if (params.cpg_panel) {
+            ch_cpg_panels_by_scope = channel.of(
+                ['autosomal', file(params.cpg_panel, checkIfExists: true)]
+            )
+        } else {
+            ch_cpg_panels_by_scope = DETECT_CPG_ISLANDS(ch_narrow_atlas_by_scope).cpg_bed
+        }
+        if (params.icr_panel) {
+            ch_icr_panel = channel.value(file(params.icr_panel, checkIfExists: true))
+        } else {
+            ch_icr_panel = DETECT_ICR_REGIONS(
+                ch_narrow_atlas_by_scope.combine(ch_icr_gene_list)
+            ).icr_bed.map { _scope, f -> f }.collect().map { files -> files[0] }
+        }
     }
 
     // (scope, atlas, panel) — one entry per scope
@@ -1293,19 +1283,20 @@ workflow {
         .combine(ch_refs_by_scope, by: 0)
         // (scope, meta, sample_bed, atlas, panel)
         .map { scope, meta, bed, atlas, panel ->
-            def diff_thresh = params.dmr_cpg_diff_threshold
-            def min_sites   = params.dmr_cpg_min_sites
+            def is_female_x = scope == 'female_X'
+            def diff_thresh = is_female_x ? params.sex_f_diff_threshold : params.dmr_cpg_diff_threshold
+            def min_sites   = is_female_x ? params.sex_f_min_sites : params.dmr_cpg_min_sites
             def ref_min     = 0.0
             def ref_max     = 1.0
             [meta, bed, atlas, panel, scope, diff_thresh, min_sites, ref_min, ref_max]
         }
 
-    ch_dmr_raw = CALL_DMR(ch_dmr_input, ch_panel2)
+    ch_dmr_raw = CALL_DMR(ch_dmr_input, ch_icr_panel)
 
     // Group raw component-scope DMR files per sample, then annotate in one pass.
     // meta is stable across scopes for a given sample, so groupTuple on the
     // first slot (meta) correctly merges autosomal + X/Y records.
     ch_dmr_grouped = ch_dmr_raw.groupTuple()
 
-    ANNOTATE_DMRS(ch_dmr_grouped, ch_gene_annot)
+    ANNOTATE_DMRS(ch_dmr_grouped)
 }

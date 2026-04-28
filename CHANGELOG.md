@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0] - 2026-04-27
+
+### Changed
+
+- CpG island and ICR panels now run by default. The former `panel2` interface
+  is replaced by `icr_panel`, `icr_diff_threshold`, and `icr_min_sites`.
+- Final DMR output remains one file per CASE sample:
+  `results/dmr/dmr_{sample}_case.tsv`, with `PANEL` values `CpG` or `ICR`.
+- Sex chromosome analysis now follows the manuscript strategy:
+  autosomal chr1-22, male non-PAR chrX, female non-PAR chrX, and male chrY.
+- Female chrX now uses a hemi-methylated CpG island model
+  (`sex_f_ref_meth_min` to `sex_f_ref_meth_max`) and relaxed DMR thresholds
+  (`sex_f_diff_threshold`, `sex_f_min_sites`).
+- DMR-only runs with `--ref_atlas` no longer require `--cpg_panel`; CpG islands
+  are detected from the provided atlas unless a panel override is supplied.
+- ICRs are now defined as hemi-methylated regions within imprinting gene
+  candidate intervals. `icr_gene_list` is the candidate BED source, while
+  `icr_panel` must contain ICR regions rather than whole gene bodies.
+- DMRdetector v2.0 is hg38-only; GRCh37 PAR selection has been removed.
+
+### Added
+
+- Bundled default BED assets under `assets/`: `cpg_island.bed`,
+  `icr_gene_list.bed`, `icr_region.bed`, and `par_hg38.bed`.
+- `DETECT_ICR_REGIONS` process to build ICRs from an autosomal reference atlas
+  and imprinting gene candidate BED.
+
 ## [1.3] - 2026-04-27
 
 ### Changed

@@ -22,53 +22,67 @@
           "format": "directory-path",
           "default": "./results",
           "description": "Output directory for results."
-        },
-        "gtf": {
-          "type": "string",
-          "format": "file-path",
-          "description": "Ensembl GTF annotation file (gzipped). Auto-downloaded from Ensembl if not provided."
         }
       }
     },
     "precomputed_references": {
       "title": "Pre-computed References",
       "type": "object",
-      "description": "Skip Stages 1-2 by providing pre-built references.",
+      "description": "Provide pre-built references or override the CpG island panel.",
       "properties": {
         "ref_atlas": {
           "type": "string",
           "format": "file-path",
-          "description": "Pre-built reference atlas (tsv.gz). Skips Stage 1."
+          "description": "Pre-built reference atlas (tsv.gz). Skips Stage 1; CpG islands are detected from this atlas unless cpg_panel is also provided."
         },
         "cpg_panel": {
           "type": "string",
           "format": "file-path",
-          "description": "Pre-built CpG panel (bed). Skips Stage 2."
+          "description": "Optional pre-built CpG island panel (bed). Overrides atlas-based CpG island detection."
         }
       }
     },
-    "optional_panel": {
-      "title": "Optional Second Panel",
+    "icr_panel": {
+      "title": "ICR Panel",
       "type": "object",
-      "description": "Optional BED file for a second panel analysis.",
+      "description": "ICR panel analysis is enabled by default and runs alongside CpG island DMR detection.",
       "properties": {
-        "panel2": {
+        "icr_panel": {
           "type": "string",
           "format": "file-path",
-          "description": "Headerless 3-column BED file (CHROM, START, END)."
+          "description": "Optional ICR BED override. Must contain ICR regions, not whole imprinting gene bodies. If omitted, ICRs are built from the available reference atlas and icr_gene_list."
         },
-        "panel2_diff_threshold": {
+        "icr_gene_list": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Optional imprinting gene candidate BED override. Defaults to assets/icr_gene_list.bed. Used to build ICR regions from a reference atlas."
+        },
+        "icr_ref_meth_min": {
+          "type": "number",
+          "default": 0.35,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Lower REF_METH bound for defining hemi-methylated ICRs from an atlas."
+        },
+        "icr_ref_meth_max": {
+          "type": "number",
+          "default": 0.65,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Upper REF_METH bound for defining hemi-methylated ICRs from an atlas."
+        },
+        "icr_diff_threshold": {
           "type": "number",
           "default": 0.25,
           "minimum": 0,
           "maximum": 1,
-          "description": "|DIFF| threshold for panel2."
+          "description": "|DIFF| threshold for ICR panel."
         },
-        "panel2_min_sites": {
+        "icr_min_sites": {
           "type": "integer",
           "default": 5,
           "minimum": 1,
-          "description": "Minimum CpG sites for panel2."
+          "description": "Minimum CpG sites for ICR panel."
         }
       }
     },
@@ -203,18 +217,12 @@
         "include_sex_chromosomes": {
           "type": "boolean",
           "default": true,
-          "description": "Enable v1.3 sex-stratified chrX/chrY analysis: infer sex from VCF, build autosomal, male_X, female_X, and Y component references, and call DMRs against the sex-appropriate components. PAR remains with X/Y. Set to false to restrict analysis to autosomes only."
-        },
-        "genome_build": {
-          "type": "string",
-          "default": "GRCh38",
-          "enum": ["GRCh38", "GRCh37"],
-          "description": "Genome build used to select built-in PAR coordinates."
+          "description": "Enable v2.0 ploidy-aware and X-inactivation-aware sex chromosome analysis: infer sex from VCF, build autosomal, non-PAR male_X, non-PAR female_X, and Y component references, and call DMRs against sex-appropriate components. Set to false to restrict analysis to autosomes only."
         },
         "par_bed": {
           "type": "string",
           "format": "file-path",
-          "description": "Override built-in PAR BED (4-col: CHROM START END NAME) used for VCF-based sex inference. Must cover both 'chrX/chrY' and 'X/Y' contig naming."
+          "description": "Override built-in hg38 PAR BED (4-col: CHROM START END NAME) used for non-PAR chrX/Y splitting. Must cover both 'chrX/chrY' and 'X/Y' contig naming."
         },
         "sex_atlas_min_controls": {
           "type": "integer",
@@ -222,49 +230,32 @@
           "minimum": 1,
           "description": "Minimum male or female CTRL count required for sex-specific CASE comparisons."
         },
-        "sex_het_threshold_male": {
-          "type": "integer",
-          "default": 100,
-          "minimum": 0,
-          "description": "Non-PAR chrX HET SNP count below this threshold classifies the sample as male (hemizygous)."
-        },
-        "sex_het_threshold_female": {
-          "type": "integer",
-          "default": 1000,
-          "minimum": 0,
-          "description": "Non-PAR chrX HET SNP count above this threshold classifies the sample as female (diploid). Counts between male and female thresholds are classified as U (autosomes only)."
-        },
-        "sex_override_tsv": {
-          "type": "string",
-          "format": "file-path",
-          "description": "Optional 2-column TSV (sample_id, sex) to override VCF-based sex inference (useful for aneuploid karyotypes)."
-        },
         "sex_f_ref_meth_min": {
           "type": "number",
-          "default": 0.35,
+          "default": 0.40,
           "minimum": 0,
           "maximum": 1,
-          "description": "Deprecated compatibility parameter; inactive in v1.3."
+          "description": "Female_X hemi-methylated CpG island lower REF_METH bound."
         },
         "sex_f_ref_meth_max": {
           "type": "number",
-          "default": 0.65,
+          "default": 0.60,
           "minimum": 0,
           "maximum": 1,
-          "description": "Deprecated compatibility parameter; inactive in v1.3."
+          "description": "Female_X hemi-methylated CpG island upper REF_METH bound."
         },
         "sex_f_diff_threshold": {
           "type": "number",
           "default": 0.25,
           "minimum": 0,
           "maximum": 1,
-          "description": "Deprecated compatibility parameter; inactive in v1.3."
+          "description": "|DIFF| threshold for female_X DMRs."
         },
         "sex_f_min_sites": {
           "type": "integer",
           "default": 5,
           "minimum": 1,
-          "description": "Deprecated compatibility parameter; inactive in v1.3."
+          "description": "Minimum CpG sites for female_X DMRs."
         }
       }
     },
@@ -289,10 +280,6 @@
           "description": "Maximum time per process.",
           "pattern": "^\\d+(\\.\\d+)?\\s*(s|m|h|d)$"
         },
-        "apptainer_bind": {
-          "type": "string",
-          "description": "Comma-separated host paths to bind-mount into the container."
-        },
         "tmp_dir": {
           "type": "string",
           "format": "directory-path",
@@ -304,7 +291,7 @@
   "allOf": [
     { "$ref": "#/$defs/input_output" },
     { "$ref": "#/$defs/precomputed_references" },
-    { "$ref": "#/$defs/optional_panel" },
+    { "$ref": "#/$defs/icr_panel" },
     { "$ref": "#/$defs/atlas_building" },
     { "$ref": "#/$defs/cpg_island_detection" },
     { "$ref": "#/$defs/dmr_detection" },

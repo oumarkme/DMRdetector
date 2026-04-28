@@ -1,0 +1,25 @@
+name: dmrdetector
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # Workflow runner
+  - nextflow=25.10.4
+
+  # R + libraries used by pipeline processes
+  - r-base=4.4.2
+  - r-data.table=1.17.8
+  - r-r.utils=2.13.0
+  - r-readxl=1.4.5
+  - bioconductor-ensembldb=2.30.0
+  - bioconductor-ensdb.hsapiens.v86=2.99.0
+  - bioconductor-genomicranges=1.58.0
+
+  # CLI tools used by Bash processes
+  - bcftools=1.23
+  - bedtools=2.31.1
+  - htslib=1.23
+
+  # Java runtime for Nextflow
+  - openjdk=21

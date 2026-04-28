@@ -7,12 +7,10 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3-blue.svg" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.0-blue.svg" alt="Version"></a>
   <a href="https://www.nextflow.io/"><img src="https://img.shields.io/badge/Nextflow-%E2%89%A523.04.0-brightgreen.svg" alt="Nextflow"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://ghcr.io/oumarkme/DMRdetector"><img src="https://img.shields.io/badge/Container-GHCR-blue.svg" alt="Container"></a>
-  <a href="https://apptainer.org/"><img src="https://img.shields.io/badge/Apptainer-supported-orange.svg" alt="Apptainer"></a>
-  <a href="https://github.com/oumarkme/DMRdetector/actions"><img src="https://github.com/oumarkme/DMRdetector/actions/workflows/docker.yml/badge.svg" alt="CI"></a>
+  <a href="https://docs.conda.io/"><img src="https://img.shields.io/badge/Conda-supported-44A833.svg" alt="Conda"></a>
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20WSL2%20%7C%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/DOI-pending-grey.svg" alt="DOI">
 </p>
@@ -21,7 +19,7 @@
 
 ## Overview
 
-**DMRdetector** builds a population-level methylation reference atlas from control samples and detects differentially methylated regions (DMRs) in case samples. It supports an optional second panel for targeted region analysis (e.g., imprinted control regions).
+**DMRdetector** builds a population-level methylation reference atlas from control samples and detects differentially methylated regions (DMRs) in case samples. CpG island and imprinted control region (ICR) panels are both analysed by default.
 
 ### Pipeline Stages
 
@@ -35,15 +33,14 @@ CTRL + CASE samples
   ├─ Stage 2: DETECT CpG ─── CTRL only ─── identify CORE/SHORE, cluster, extend
   │
   └─ Stage 3: DETECT DMRs ── CASE only
-        ├─ PARSE_GTF       (once)      gene annotation table
         ├─ CALL_DMR        (per case)  sample/atlas merge, t-test, FDR
-        └─ ANNOTATE_DMRS   (per case)  nearest-gene overlap, final TSV
+        └─ ANNOTATE_DMRS   (per case)  EnsDb.Hsapiens.v86 gene overlap, final TSV
 ```
 
 Autosomes (1-22) are always analysed. Sex chromosomes (X, Y) are handled by
-a sex-stratified workflow that runs by **default**: the pipeline infers
-sample sex from the VCF and builds component references for autosomes,
-male chrX, female chrX, and chrY. PAR stays with X/Y in v1.3. Pass
+a sex-stratified workflow that runs by **default**: sex (`M`/`F`) is read
+from the samplesheet, and the pipeline builds component references for
+autosomes, male non-PAR chrX, female non-PAR chrX, and chrY. Pass
 `--include_sex_chromosomes false` to restrict the run to autosomes only.
 See [Sex-chromosome analysis](#sex-chromosome-analysis) below.
 
@@ -53,41 +50,36 @@ See [Sex-chromosome analysis](#sex-chromosome-analysis) below.
 |----------|-------|-----------|
 | **Full pipeline** | CTRL + CASE samples | Stages 1 → 2 → 3 |
 | **Build atlas only** | CTRL samples only | Stages 1 → 2 |
-| **DMR detection only** | CASE samples + `--ref_atlas` + `--cpg_panel` | Stage 3 only |
+| **DMR detection only** | CASE samples + `--ref_atlas` (optional `--cpg_panel`) | Stage 3 only |
 
 ---
 
 ## Getting Started
 
-### 1. Set up the environment
+### 1. Clone and set up the conda environment
 
-We recommend using [Conda](https://docs.conda.io/) to manage Nextflow and Apptainer:
-
-```bash
-conda create -n DMRdetector -c conda-forge -c bioconda nextflow apptainer
-conda activate DMRdetector
-```
-
-### 2. Download the pipeline
+The bundled `environment.yml` installs **everything** you need (Nextflow,
+R + Bioconductor packages, bcftools, bedtools, htslib) into a single
+conda environment. No Docker or Apptainer required.
 
 ```bash
 git clone https://github.com/oumarkme/DMRdetector.git
 cd DMRdetector
+conda env create -f environment.yml
+conda activate dmrdetector
 ```
 
-### 3. Download pre-built reference atlas (optional)
+### 2. Download pre-built reference atlas (optional)
 
 A pre-built reference atlas is available on Zenodo: [10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867). You can use it to skip Stage 1–2 and run DMR detection directly (see [Advanced Usage](#skip-atlas-building-pre-built-references)).
 
-### 4. Run
+### 3. Run
 
 ```bash
 nextflow run main.nf \
     --input samplesheet.csv \
     --outdir results
 ```
-
-The Apptainer image is pulled automatically from [GHCR](https://ghcr.io/oumarkme/DMRdetector) on first run. The cached image is stored under `tmp_dir/apptainer/` (or `outdir/apptainer/` if `--tmp_dir` is not set). Docker users can run the same pipeline with `-profile docker`.
 
 > **Tip:** Use `--tmp_dir /local/fast/disk` when your input files are on network storage for significantly faster I/O.
 
@@ -100,15 +92,16 @@ The Apptainer image is pulled automatically from [GHCR](https://ghcr.io/oumarkme
 A CSV file with the following columns:
 
 ```csv
-sample_id,type,meth_bed,vcf
-ONT001,CASE,/path/to/ONT001.combined.bed.gz,/path/to/ONT001.vcf
-ONT004,CTRL,/path/to/ONT004.combined.bed.gz,/path/to/ONT004.vcf
+sample_id,type,sex,meth_bed,vcf
+ONT001,CASE,M,/path/to/ONT001.combined.bed.gz,/path/to/ONT001.vcf
+ONT004,CTRL,F,/path/to/ONT004.combined.bed.gz,/path/to/ONT004.vcf
 ```
 
 | Column | Description |
 |--------|-------------|
 | `sample_id` | Unique sample identifier |
 | `type` | `CASE` or `CTRL` |
+| `sex` | `M` or `F` (required; routes chrX/chrY to the correct component scope) |
 | `meth_bed` | Path to methylation BED file (gzipped) |
 | `vcf` | Path to VCF file (used to exclude heterozygous SNP sites) |
 
@@ -122,28 +115,22 @@ The pipeline auto-detects the input format based on column count:
 | **modkit pileup** | 18 columns (bedMethyl) | col 10 | col 12 |
 | **pb-CpG-tools** | 7-9 columns (with header) | col 6 | col 7 |
 
-### GTF Annotation
+### Gene Annotation
 
-If `--gtf` is not provided, the **latest GRCh38 GTF is auto-downloaded** from Ensembl. To use a specific version:
+DMRs are annotated with the nearest gene using the `EnsDb.Hsapiens.v86`
+Bioconductor package (GRCh38, Ensembl release 86) bundled with the conda
+environment. No external GTF download is needed; per-region selection
+prefers `protein_coding` over `lncRNA` over pseudogenes, with overlap
+width and gene length as tie-breakers.
 
-```bash
-# GRCh38 (hg38)
-wget https://ftp.ensembl.org/pub/release-115/gtf/homo_sapiens/Homo_sapiens.GRCh38.115.gtf.gz
+### ICR Panel
 
-# GRCh37 (hg19)
-wget https://ftp.ensembl.org/pub/grch37/release-115/gtf/homo_sapiens/Homo_sapiens.GRCh37.87.gtf.gz
-```
-
-Then pass with `--gtf Homo_sapiens.GRCh38.115.gtf.gz`. Use the GTF version matching your alignment reference.
-
-### Optional Panel2
-
-A headerless 3-column BED file (`CHROM, START, END`) for a second panel analysis (e.g., imprinted control regions). Gene annotation is performed via GTF overlap.
+ICR analysis runs by default. When a reference atlas is available, DMRdetector defines ICRs as hemi-methylated regions within imprinting gene candidate intervals from [`assets/icr_gene_list.bed`](assets/icr_gene_list.bed). To override the ICR panel, pass an ICR BED such as [`assets/icr_region.bed`](assets/icr_region.bed); do not pass whole imprinting gene body coordinates as `--icr_panel`.
 
 ```bash
 nextflow run main.nf \
     --input samplesheet.csv \
-    --panel2 my_regions.bed \
+    --icr_panel my_icr_regions.bed \
     --outdir results
 ```
 
@@ -156,21 +143,21 @@ results/
 ├── atlas/
 │   ├── ref_atlas_150.tsv.gz          # Autosomal chr1-22 reference atlas (narrow)
 │   ├── ref_atlas_500.tsv.gz          # Autosomal chr1-22 reference atlas (wide)
-│   ├── ref_atlas_150_male_X.tsv.gz   # Male CTRL chrX atlas
+│   ├── ref_atlas_150_male_X.tsv.gz   # Male CTRL non-PAR chrX atlas
 │   ├── ref_atlas_500_male_X.tsv.gz
-│   ├── ref_atlas_150_female_X.tsv.gz # Female CTRL chrX atlas
+│   ├── ref_atlas_150_female_X.tsv.gz # Female CTRL non-PAR chrX atlas
 │   ├── ref_atlas_500_female_X.tsv.gz
 │   ├── ref_atlas_150_Y.tsv.gz        # Male CTRL chrY atlas
 │   └── ref_atlas_500_Y.tsv.gz
 ├── cpg_islands/
 │   ├── cpg_signal.bed                # Autosomal CpG panel
-│   ├── cpg_signal_male_X.bed         # Male chrX-derived CpG panel
-│   └── cpg_signal_Y.bed              # Male chrY-derived CpG panel
+│   ├── cpg_signal_male_X.bed         # Male non-PAR chrX CpG panel
+│   ├── cpg_signal_female_X.bed       # Female non-PAR chrX hemi-methylated panel
+│   └── cpg_signal_Y.bed              # Male chrY CpG panel
+├── icr_regions/
+│   └── icr_region.bed                # ICRs defined from imprinting genes + atlas
 ├── dmr/
 │   └── dmr_{sample}_case.tsv     # DMR results per case sample (with PANEL_SCOPE column by default)
-├── pipeline_info/
-│   ├── sex_inference/            # Per-sample VCF-based sex inference reports
-│   └── sex_inference_summary.tsv # Combined sex inference summary
 └── nf_report.html                # Nextflow execution report
 ```
 
@@ -180,7 +167,7 @@ results/
 |--------|-------------|
 | CHROM, START, END | Genomic coordinates |
 | GENE | Nearest gene symbol |
-| PANEL | `CpG` or `Panel2` |
+| PANEL | `CpG` or `ICR` |
 | NUM_CPG | Number of CpG sites in region |
 | NUM_READS | Mean read coverage |
 | SAMPLE_METH (%) | Sample methylation level |
@@ -241,8 +228,12 @@ nextflow run main.nf --input samplesheet.csv --dmr_fdr_threshold 0.05
 | `dmr_merge_distance` | 150 | Max gap for merging sites (bp) |
 | `dmr_fdr_threshold` | 0.01 | FDR significance threshold |
 | `dmr_cpg_min_sites` | 30 | Min CpG sites for CpG panel |
-| `panel2_diff_threshold` | 0.25 | \|DIFF\| threshold for panel2 |
-| `panel2_min_sites` | 5 | Min CpG sites for panel2 |
+| `icr_panel` | null | Advanced ICR BED override; must contain ICR regions, not whole gene bodies |
+| `icr_gene_list` | `assets/icr_gene_list.bed` | Imprinting gene candidate BED used to define ICRs from an atlas |
+| `icr_ref_meth_min` | 0.40 | Lower REF_METH bound for hemi-methylated ICR definition |
+| `icr_ref_meth_max` | 0.60 | Upper REF_METH bound for hemi-methylated ICR definition |
+| `icr_diff_threshold` | 0.25 | \|DIFF\| threshold for ICR panel |
+| `icr_min_sites` | 5 | Min CpG sites for ICR panel |
 
 </details>
 
@@ -255,16 +246,12 @@ Active only when `--include_sex_chromosomes true`. See
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `include_sex_chromosomes` | true | Enable sex-stratified chrX/chrY analysis (default). Set to `false` for autosomes only |
-| `genome_build` | `GRCh38` | PAR coordinate set (`GRCh38` or `GRCh37`) |
-| `par_bed` | null | Override built-in PAR BED (4-col: CHROM START END NAME) |
+| `par_bed` | null | Override built-in hg38 PAR BED (4-col: CHROM START END NAME) |
 | `sex_atlas_min_controls` | 3 | Minimum male/female CTRL count required for sex-specific CASE comparisons |
-| `sex_het_threshold_male` | 100 | Non-PAR chrX HET SNP count below → `M` |
-| `sex_het_threshold_female` | 1000 | Non-PAR chrX HET SNP count above → `F` (between → `U`, autosomes only) |
-| `sex_override_tsv` | null | Optional 2-col TSV (`sample_id`, `sex`) to override inference |
-| `sex_f_ref_meth_min` | 0.35 | Deprecated compatibility parameter; inactive in v1.3 |
-| `sex_f_ref_meth_max` | 0.65 | Deprecated compatibility parameter; inactive in v1.3 |
-| `sex_f_diff_threshold` | 0.25 | Deprecated compatibility parameter; inactive in v1.3 |
-| `sex_f_min_sites` | 5 | Deprecated compatibility parameter; inactive in v1.3 |
+| `sex_f_ref_meth_min` | 0.40 | Female_X hemi-methylated CpG island lower REF_METH bound |
+| `sex_f_ref_meth_max` | 0.60 | Female_X hemi-methylated CpG island upper REF_METH bound |
+| `sex_f_diff_threshold` | 0.25 | \|DIFF\| threshold for female_X DMRs |
+| `sex_f_min_sites` | 5 | Min CpG sites for female_X DMRs |
 
 </details>
 
@@ -277,7 +264,6 @@ Active only when `--include_sex_chromosomes true`. See
 | `max_memory` | auto | Maximum total memory |
 | `max_time` | 168.h | Maximum time per process |
 | `tmp_dir` | null | Local temp directory for work/tmp files |
-| `apptainer_bind` | null | Comma-separated host paths to bind-mount |
 
 Resources are auto-detected at startup (80% of system RAM; CPUs capped by RAM/4GB ratio):
 
@@ -293,36 +279,6 @@ Override: `--max_cpus 4 --max_memory '16.GB'`
 
 ---
 
-## Container and Bind Mounts
-
-### Apptainer (Linux / WSL2) — default
-
-Default image: `oras://ghcr.io/oumarkme/dmrdetector-apptainer:sha-a00657d`
-
-If input files are outside the working directory, bind-mount host paths:
-
-```bash
-nextflow run main.nf \
-    --input samplesheet.csv \
-    --apptainer_bind '/data,/mnt/nas' \
-    --outdir results
-```
-
-### Docker (macOS)
-
-Docker profile image: `ghcr.io/oumarkme/dmrdetector:sha-a00657d`
-
-```bash
-nextflow run main.nf \
-    -profile docker \
-    --input samplesheet.csv \
-    --outdir results
-```
-
-Docker Desktop shares `/Users` and `/tmp` by default. Add other paths in Docker Desktop > Settings > Resources > File Sharing.
-
----
-
 ## Advanced Usage
 
 ### Skip atlas building (pre-built references)
@@ -331,9 +287,12 @@ Docker Desktop shares `/Users` and `/tmp` by default. Add other paths in Docker 
 nextflow run main.nf \
     --input samplesheet.csv \
     --ref_atlas results/atlas/ref_atlas_150.tsv.gz \
-    --cpg_panel results/cpg_islands/cpg_signal.bed \
     --outdir results
 ```
+
+When `--ref_atlas` is provided without `--cpg_panel`, DMRdetector detects a
+CpG island panel from that atlas. Pass `--cpg_panel` only when you want to
+override this with a pre-built BED such as [`assets/cpg_island.bed`](assets/cpg_island.bed).
 
 ### Resume after failure
 
@@ -348,7 +307,6 @@ nextflow run main.nf [same options] -resume
 | Profile | Description |
 |---------|-------------|
 | `test` | Reduced resources (4 CPUs, 16 GB) for CI/testing |
-| `docker` | Use Docker instead of Apptainer (required for macOS) |
 
 ---
 
@@ -356,66 +314,45 @@ nextflow run main.nf [same options] -resume
 
 Sex-stratified analysis of chrX/chrY runs by default. Pass
 `--include_sex_chromosomes false` to disable it (see
-[Autosomes-only mode](#autosomes-only-mode) below). In the default path the
-pipeline:
+[Autosomes-only mode](#autosomes-only-mode) below). Sex (`M` or `F`) is a
+required column in the input samplesheet — the pipeline does not infer sex.
+In the default path the pipeline:
 
-1. **Infers sex from the VCF** (`INFER_SEX_FROM_VCF`) by counting heterozygous
-   SNPs on non-PAR chrX. Males are hemizygous (HET ≈ 0); females are diploid
-   (HET in the thousands). Counts below `sex_het_threshold_male` → `M`,
-   above `sex_het_threshold_female` → `F`, between → `U` (autosomes only).
-   An audit row per sample is written to
-   `pipeline_info/sex_inference_summary.tsv`.
+1. **Reads sex per sample** from the samplesheet `sex` column (M/F). Validation
+   at launch rejects missing or non-M/F values.
 2. **Splits each methylation BED** (`SPLIT_SEX_COMPONENTS`) into component
-   scopes: autosomal chr1-22, full chrX, and full chrY. PAR stays with X/Y;
-   the built-in PAR coordinates are used only for VCF-based sex inference.
+   scopes: autosomal chr1-22, non-PAR chrX, and chrY. Built-in PAR coordinates
+   are used for non-PAR chrX/Y splitting.
 3. **Builds four reference atlases** (`BUILD_ATLAS` + `SMOOTH_ATLAS`):
    - **autosomal** — chr1-22 from all CTRLs, written as
      `ref_atlas_{150,500}.tsv.gz`.
-   - **male_X** — full chrX from male CTRLs.
-   - **female_X** — full chrX from female CTRLs.
+   - **male_X** — non-PAR chrX from male CTRLs.
+   - **female_X** — non-PAR chrX from female CTRLs.
    - **Y** — full chrY from male CTRLs.
    If a CASE requires a sex-specific comparison and too few matching CTRLs are
    available, the pipeline exits with a clear error.
-4. **Detects CpG panels from male-derived atlases only**: autosomal, `male_X`,
-   and `Y` use the standard CORE (REF_METH < 10%) + SHORE
-   (REF_METH < 30%) rules. Female chrX DMRs reuse the `male_X` CpG panel but
-   compare methylation against the `female_X` atlas.
-5. **Calls DMRs against sex-appropriate component atlases**:
+4. **Detects CpG panels per scope**: autosomal, `male_X`, and `Y` use the
+   standard CORE (REF_METH < 10%) + SHORE (REF_METH < 30%) rules. `female_X`
+   uses a hemi-methylated island rule (`sex_f_ref_meth_min` to
+   `sex_f_ref_meth_max`, default 40-60%) to model X-inactivation.
+5. **Defines ICRs from the autosomal atlas** by selecting 40-60%
+   hemi-methylated regions inside imprinting gene candidates from
+   `assets/icr_gene_list.bed`. If `--icr_panel` is provided, that ICR BED is
+   used directly.
+6. **Calls DMRs against sex-appropriate component atlases**:
 
    | Scope | `diff` threshold | `min_sites` | REF_METH gate |
    |---|---|---|---|
    | `autosomal` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
    | `male_X` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
-   | `female_X` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
+   | `female_X` | `sex_f_diff_threshold` (0.25) | `sex_f_min_sites` (5) | none |
    | `Y` | `dmr_cpg_diff_threshold` (0.40) | `dmr_cpg_min_sites` (30) | none |
 
+   CpG and ICR DMRs are both called by default. ICR calling is autosomal-only.
    Male CASE samples run `autosomal + male_X + Y`; female CASE samples run
-   `autosomal + female_X`; unknown-sex CASE samples run autosomal only with a
-   warning. Results are merged per sample by `ANNOTATE_DMRS`, tagged with a
-   `PANEL_SCOPE` column, and published as a single `dmr_{sample}_case.tsv`.
-
-### Overriding inferred sex
-
-If a sample has an aneuploid karyotype (Turner 45,X, Klinefelter 47,XXY,
-etc.) or clinical records that supersede the VCF inference, pass a 2-column
-TSV:
-
-```tsv
-sample_id	sex
-ONT042	F
-ONT098	M
-```
-
-```bash
-nextflow run main.nf \
-    --input samplesheet.csv \
-    --include_sex_chromosomes true \
-    --sex_override_tsv sex_calls.tsv \
-    --outdir results
-```
-
-Overrides are applied after inference; the audit summary records the source
-(`inferred` vs. `override`).
+   `autosomal + female_X`. Results are merged per sample by `ANNOTATE_DMRS`,
+   tagged with `PANEL` and `PANEL_SCOPE`, and published as a single
+   `dmr_{sample}_case.tsv`.
 
 ### Autosomes-only mode
 
