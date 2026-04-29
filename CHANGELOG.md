@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2] - 2026-04-28
+
+### Added
+- **Ploidy-aware genome partition.** PAR1 + PAR2 are now folded into the
+  autosomal compartment because they recombine in male meiosis and are
+  diploid in both sexes; PAR1 genes (e.g. *SHOX*, *IL3RA*, *CSF2RA*) escape
+  X-inactivation and obey the autosomal hypomethylated CpG-island regime.
+  Reads on chrY-PAR are translated to chrX-PAR coordinates so the same
+  locus is counted once. Sex-chromosome scopes are now **strictly non-PAR**
+  on both chrX and chrY.
+- **Tabix-based region-restricted I/O.** `CALL_DMR` and
+  `DETECT_ICR_REGIONS` now read the atlas + sample BED only at the panel
+  intersection (~1–2 % of hg38) via `tabix -R panel.bed`, cutting atlas
+  I/O 50–200×. `PREPROCESS_SAMPLE` and `SPLIT_SEX_COMPONENTS` emit
+  tabix-indexed `.tbi` siblings in the work cache; published outputs
+  remain `.bed.gz` only (no `.tbi` clutter in `results/`).
+
+### Changed
+- **Atlas file format renamed `.tsv.gz` → `.bed.gz`.** The atlas always
+  had `CHROM, START, END` as columns 1–3; the new name reflects what it
+  actually is and makes it directly tabixable. The file is now headerless
+  (standard BED convention); column names supplied by readers.
+  `--ref_atlas` accepts either extension for backwards compatibility.
+- **`SPLIT_SEX_COMPONENTS` rewrite.** Autosomal output now pools chr1–22
+  + PAR1 + PAR2 (with chrY-PAR2 coordinates translated by +98,813,480 to
+  match chrX-PAR2). chrX and chrY outputs are both non-PAR via
+  `bedtools intersect -v` against the bundled hg38 PAR BED.
+- **Workflow tuple shapes** updated to carry tabix `.tbi` companions
+  alongside `.bed.gz` files where downstream processes use random access.
+- **`medium` resource label**: 4 → 6 CPUs (helps `CALL_DMR`'s
+  `setDTthreads` t-test loop).
+- **Version bumped to 2.2** across `nextflow.config`, README, and
+  CHANGELOG.
+
+### Removed
+- The no-op `ref_atlas[REF_METH >= ref_meth_min & REF_METH <= ref_meth_max]`
+  filter inside `CALL_DMR` (band was always `[0.0, 1.0]` for every scope;
+  female_X hemi-methylated band is enforced upstream in
+  `DETECT_CPG_ISLANDS`).
+- The `ref_meth_min` / `ref_meth_max` value inputs to `CALL_DMR` and the
+  matching workflow-assembly slots (followed from filter removal).
+
 ## [2.1] - 2026-04-28
 
 ### Added

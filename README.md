@@ -1,6 +1,6 @@
 <p align="center">
   <picture>
-    <img alt="DMRdetector" src="https://img.shields.io/badge/DMRdetector-v2.1-1f6feb?style=for-the-badge">
+    <img alt="DMRdetector" src="https://img.shields.io/badge/DMRdetector-v2.2-1f6feb?style=for-the-badge">
   </picture>
 </p>
 
@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.1-1f6feb.svg" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.2-1f6feb.svg" alt="Version"></a>
   <a href="https://www.nextflow.io/"><img src="https://img.shields.io/badge/Nextflow-%E2%89%A524.10-2bb673.svg" alt="Nextflow"></a>
   <a href="https://docs.conda.io/"><img src="https://img.shields.io/badge/Conda-bundled-44a833.svg" alt="Conda"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-eab308.svg" alt="License"></a>
@@ -31,14 +31,15 @@
 
 ## At a glance
 
-|  | DMRdetector v2.1 |
+|  | DMRdetector v2.2 |
 |---|---|
 | **Input** | ONT methylation BEDs (5-col, modkit, or pb-CpG-tools) + phased VCFs |
 | **Atlas method** | Beta-Binomial dispersion + empirical Bayes shrinkage + FFT-based Gaussian smoothing |
+| **Atlas format** | Tabix-indexable bgzipped BED (`ref_atlas_*.bed.gz`); panel-restricted region queries cut atlas I/O 50–100× |
 | **CpG islands** | CORE/SHORE classification from population methylation (no GC-content threshold) |
 | **ICRs** | Hemi-methylated sites (50% ± 15%) within 134 imprinted genes ± 5 kb |
 | **DMR test** | One-sample t-test on per-CpG `DIFF`, BH FDR per panel |
-| **Sex chromosomes** | Sex-stratified atlases (male_X / female_X / Y); X-inactivation-aware |
+| **Sex chromosomes** | Ploidy-aware partition: autosomal (chr1–22 + PAR pooled); non-PAR male_X / female_X / Y atlases; female_X uses hemi-methylated (40–60%) X-inactivation model |
 | **Annotation** | `EnsDb.Hsapiens.v86` (offline GRCh38; biotype-prioritised) |
 | **Runtime** | Single conda env, ~5–15 min to install, no Docker/Apptainer needed |
 
@@ -130,7 +131,7 @@ Preprocessing (all samples)
         │           ├─ Beta-Binomial dispersion estimation
         │           ├─ Empirical Bayes shrinkage  (φ = (1−w)·φ_raw + w·φ_trend)
         │           └─ FFT-based Gaussian smoothing (σ = 150 + 500 bp, parallel)
-        │       ⇒ ref_atlas_{150,500}.tsv.gz
+        │       ⇒ ref_atlas_{150,500}.bed.gz (bgzipped, tabix-indexable)
         │
         │       Stage 2 — Feature panels
         │           ├─ CORE  (REF_METH < 10%, φ < 0.05)
@@ -148,8 +149,13 @@ Preprocessing (all samples)
 ```
 
 When `--include_sex_chromosomes true` (default), Stages 1 and 2 run per scope
-(`autosomal`, `male_X`, `female_X`, `Y`). The female_X atlas uses a
-hemi-methylated CpG-island model (REF_METH 40–60%) to capture X-inactivation.
+(`autosomal`, `male_X`, `female_X`, `Y`). The autosomal scope pools chr1–22
+plus PAR1 + PAR2 (PAR is biologically diploid in both sexes; reads on chrY-PAR
+are translated to chrX-PAR coordinates). The sex-chromosome scopes are strictly
+**non-PAR**: `male_X` and `female_X` are non-PAR chrX, `Y` is non-PAR chrY.
+The `female_X` atlas uses a hemi-methylated CpG-island model (REF_METH 40–60%)
+to capture X-inactivation; the other scopes use the autosomal hypomethylated
+model.
 
 ---
 
@@ -285,11 +291,11 @@ quick local checks.
 ```
 results/
 ├── atlas/
-│   ├── ref_atlas_150.tsv.gz             # Autosomal atlas (σ=150, primary)
-│   ├── ref_atlas_500.tsv.gz             # Autosomal atlas (σ=500, regional)
-│   ├── ref_atlas_150_male_X.tsv.gz      # Male non-PAR chrX
-│   ├── ref_atlas_150_female_X.tsv.gz    # Female non-PAR chrX (hemi-meth)
-│   ├── ref_atlas_150_Y.tsv.gz           # Male chrY
+│   ├── ref_atlas_150.bed.gz             # Autosomal atlas (σ=150, primary)
+│   ├── ref_atlas_500.bed.gz             # Autosomal atlas (σ=500, regional)
+│   ├── ref_atlas_150_male_X.bed.gz      # Male non-PAR chrX
+│   ├── ref_atlas_150_female_X.bed.gz    # Female non-PAR chrX (hemi-meth)
+│   ├── ref_atlas_150_Y.bed.gz           # Male chrY
 │   └── (matching σ=500 files)
 ├── cpg_islands/
 │   ├── cpg_signal.bed                   # Autosomal CpG panel
@@ -303,7 +309,11 @@ results/
 └── nf_report.html                       # Nextflow execution report
 ```
 
-### Reference atlas columns (`ref_atlas_*.tsv.gz`)
+### Reference atlas columns (`ref_atlas_*.bed.gz`)
+
+The atlas is a headerless bgzipped BED with 9 columns; column names are
+supplied by downstream consumers. Compatible with `tabix -R panel.bed`
+for fast random access (`-p bed`).
 
 `CHROM, START, END, REF_METH, REF_VAR, COV, N_SAMPLES, PHI`
 
@@ -353,10 +363,10 @@ per-CASE DMR calls.
 nextflow run main.nf \
     --input  samplesheet.csv \
     --outdir results \
-    --ref_atlas          results/atlas/ref_atlas_150.tsv.gz \
-    --ref_atlas_male_X   results/atlas/ref_atlas_150_male_X.tsv.gz \
-    --ref_atlas_female_X results/atlas/ref_atlas_150_female_X.tsv.gz \
-    --ref_atlas_Y        results/atlas/ref_atlas_150_Y.tsv.gz \
+    --ref_atlas          results/atlas/ref_atlas_150.bed.gz \
+    --ref_atlas_male_X   results/atlas/ref_atlas_150_male_X.bed.gz \
+    --ref_atlas_female_X results/atlas/ref_atlas_150_female_X.bed.gz \
+    --ref_atlas_Y        results/atlas/ref_atlas_150_Y.bed.gz \
     --cpg_panel          results/cpg_islands/cpg_signal.bed \
     --cpg_panel_male_X   results/cpg_islands/cpg_signal_male_X.bed \
     --cpg_panel_female_X results/cpg_islands/cpg_signal_female_X.bed \
@@ -374,7 +384,7 @@ sex-stratified into autosomal/male_X/female_X/Y for DMR calling.
 nextflow run main.nf \
     --input  samplesheet.csv \
     --outdir results \
-    --ref_atlas results/atlas/ref_atlas_150.tsv.gz \
+    --ref_atlas results/atlas/ref_atlas_150.bed.gz \
     --cpg_panel results/cpg_islands/cpg_signal.bed \
     --icr_panel results/icr_regions/icr_region.bed \
     --include_sex_chromosomes false
@@ -388,21 +398,25 @@ nextflow run main.nf \
 
 ## Sex-chromosome handling
 
-A separate methylation atlas for the X chromosome beyond the pseudoautosomal
-region (PAR) is constructed for males and females separately, **to deal with
-the effects of X-inactivation**. With `--include_sex_chromosomes true`
-(default):
+DMRdetector partitions the genome into four ploidy-aware compartments to
+handle X-inactivation, male hemizygosity, and the diploid behaviour of PAR.
+With `--include_sex_chromosomes true` (default):
 
-1. Each preprocessed BED is split into autosomal chr1–22, non-PAR chrX, and
-   chrY components using bundled hg38 PAR coordinates
-   (`assets/par_hg38.bed`).
+1. Each preprocessed BED is split using bundled hg38 PAR coordinates
+   (`assets/par_hg38.bed`) into:
+   - **autosomal** — chr1–22 PLUS PAR1 + PAR2 (PAR is biologically
+     diploid in both sexes; reads on chrY-PAR are translated to chrX-PAR
+     coordinates so the same locus is counted once).
+   - **non-PAR chrX** (split downstream into male_X / female_X by sex).
+   - **non-PAR chrY** (male-only).
 2. CTRL components feed four reference atlases:
-   - **autosomal** — all CTRLs; standard CORE/SHORE classification.
-   - **male_X**    — male CTRLs (non-PAR chrX, hemizygous).
-   - **female_X**  — female CTRLs; hemi-methylated model (REF_METH 40–60%)
-                    capturing X-inactivation rather than the autosomal
-                    hypomethylated model.
-   - **Y**         — male CTRLs.
+   - **autosomal** — all CTRLs (M and F), pooled PAR included.
+     Standard CORE/SHORE hypomethylated model.
+   - **male_X**    — male CTRLs only; autosomal-style hypomethylated
+                    (REF_METH < 10 %).
+   - **female_X**  — female CTRLs only; **hemi-methylated** model
+                    (REF_METH 40–60 %) capturing X-inactivation.
+   - **Y**         — male CTRLs only (non-PAR chrY); exploratory.
 3. CASE samples are routed by the `sex` column:
    - **Male CASE**   → autosomal + male_X + Y.
    - **Female CASE** → autosomal + female_X (no Y).
@@ -535,7 +549,7 @@ Ensembl `gene_id`.
 
 | Parameter            | Description |
 |----------------------|-------------|
-| `ref_atlas`          | Autosomal atlas (tsv.gz). Skips Stage 1 autosomal. |
+| `ref_atlas`          | Autosomal atlas (`.bed.gz` preferred; legacy `.tsv.gz` accepted). Skips Stage 1 autosomal. |
 | `ref_atlas_male_X`   | Male non-PAR chrX atlas. |
 | `ref_atlas_female_X` | Female non-PAR chrX atlas. |
 | `ref_atlas_Y`        | chrY atlas. |

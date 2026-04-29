@@ -24,12 +24,14 @@ The genome is partitioned into three major compartments:
 **Chromosomes:**
 
 ```text
-chr1–chr22
+chr1–chr22 + PAR1 + PAR2
 ```
+
+PAR1 and PAR2 are folded into the autosomal compartment because they recombine in male meiosis and are diploid in both sexes; PAR1 genes (e.g. *SHOX*, *IL3RA*, *CSF2RA*) escape X-inactivation and obey the autosomal hypomethylated CpG-island regime. Reads aligning to chrY-PAR are translated to chrX-PAR coordinates so the same locus is not double-counted in the autosomal atlas.
 
 ### Reference atlas
 
-A shared autosomal methylation reference atlas is constructed using all control samples.
+A shared autosomal methylation reference atlas is constructed using all control samples (M and F).
 
 ### CpG island definition
 
@@ -64,10 +66,10 @@ This high-effect threshold targets diagnostic-scale methylation aberrations.
 
 Sex chromosomes are handled separately from autosomes.
 
-Pseudoautosomal regions (PAR) are excluded from X-specific modeling.
+Pseudoautosomal regions (PAR) are excluded from sex-chromosome modeling on **both** chrX and chrY (PAR is autosomal-like and feeds the autosomal compartment, see §1.1).
 
 ```text
-X analysis = non-PAR chrX only
+X / Y analysis = non-PAR chrX and non-PAR chrY only
 ```
 
 ---
@@ -157,12 +159,12 @@ Because female X starts from a ~50% hemi-methylated baseline, biologically meani
 ## Region
 
 ```text
-chrY
+non-PAR chrY
 ```
 
 Included only for male samples.
 
-Treated as a male-specific compartment.
+Treated as a male-specific compartment. PAR1 and PAR2 are excluded from chrY for the same reason they are excluded from chrX — those regions are diploid in both sexes and feed the autosomal compartment instead.
 
 The manuscript places less emphasis on chrY-specific statistical modeling than on chrX, but conceptually it forms part of the sex-chromosome compartment.
 
@@ -211,12 +213,12 @@ Female X atlas
 
 # 6. Summary of Statistical Regimes
 
-| Compartment | Region       | Reference model | Island criterion       | DMR threshold |
-| ----------- | ------------ | --------------- | ---------------------- | ------------- |
-| Autosomal   | chr1-22      | Shared atlas    | REF_METH <10%          | 40%, >30 CpGs |
-| Male X      | non-PAR chrX | Male-specific   | REF_METH <10%          | 40%, >30 CpGs |
-| Female X    | non-PAR chrX | Female-specific | 40–60% hemi-methylated | 25%, >5 CpGs  |
-| Y           | chrY         | Male-specific   | exploratory            | optional      |
+| Compartment | Region                    | Reference model | Island criterion       | DMR threshold |
+| ----------- | ------------------------- | --------------- | ---------------------- | ------------- |
+| Autosomal   | chr1-22 + PAR1 + PAR2     | Shared atlas    | REF_METH <10%          | 40%, >30 CpGs |
+| Male X      | non-PAR chrX              | Male-specific   | REF_METH <10%          | 40%, >30 CpGs |
+| Female X    | non-PAR chrX              | Female-specific | 40–60% hemi-methylated | 25%, >5 CpGs  |
+| Y           | non-PAR chrY              | Male-specific   | exploratory            | optional      |
 
 ---
 
@@ -248,7 +250,7 @@ Rather than treating sex chromosomes as special cases of autosomal analysis, the
 
 # 8. Reviewer-Style One-Sentence Summary
 
-> The genome was partitioned into autosomal, male non-PAR X, female non-PAR X, and Y compartments, with female X modeled separately using hemi-methylated (40–60%) criteria to accommodate X-inactivation, and locus-specific DMR thresholds applied according to chromosomal biology.
+> The genome was partitioned into autosomal (chr1–22 + PAR1 + PAR2), male non-PAR X, female non-PAR X, and non-PAR Y compartments, with PAR pooled into autosomal (diploid in both sexes), female X modeled separately using hemi-methylated (40–60%) criteria to accommodate X-inactivation, and locus-specific DMR thresholds applied according to chromosomal biology.
 
 ---
 

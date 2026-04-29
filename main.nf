@@ -49,15 +49,16 @@ def show_help() {
       --icr_gene_list   Imprinting gene candidate BED (default: assets/icr_gene_list.bed)
 
     Optional (skip or override panel/reference generation):
-      --ref_atlas       Pre-built reference atlas (tsv.gz)
+      --ref_atlas       Pre-built autosomal reference atlas (.bed.gz; legacy .tsv.gz also accepted)
       --cpg_panel       Pre-built CpG island panel (bed)
 
     Chromosome coverage:
       --include_sex_chromosomes
                         Include sex-specific chrX/chrY analysis [default: true].
-                        Builds component atlases for autosomes, non-PAR
-                        male_X, non-PAR female_X, and Y. Use false for
-                        autosomes only.
+                        Builds component atlases for autosomes (chr1-22 +
+                        PAR1 + PAR2 pooled), non-PAR male_X, non-PAR
+                        female_X, and non-PAR Y. Use false for autosomes
+                        only.
 
     Output:
       --outdir          Output directory [default: ./results]
@@ -103,7 +104,9 @@ process PREPROCESS_SAMPLE {
         val min_coverage
 
     output:
-        tuple val(meta), path("${meta.id}_filtered.bed.gz"), optional: true
+        tuple val(meta),
+              path("${meta.id}_filtered.bed.gz"),
+              path("${meta.id}_filtered.bed.gz.tbi"), optional: true
 
     script:
     """
@@ -142,6 +145,7 @@ process PREPROCESS_SAMPLE {
                 { cov=\$10+0; nmod=\$12+0;
                   if (cov > min_cov) print \$1, \$2, \$3, cov, nmod }
               ' \\
+            | sort -k1,1 -k2,2n \\
             | bgzip -@ ${task.cpus} \\
             > ${meta.id}_filtered.bed.gz
     elif [ "\$NCOLS" -ge 7 ] && [ "\$NCOLS" -le 9 ]; then
@@ -154,6 +158,7 @@ process PREPROCESS_SAMPLE {
                 { cov=\$6+0; nmod=\$7+0;
                   if (cov > min_cov) print \$1, \$2, \$3, cov, nmod }
               ' \\
+            | sort -k1,1 -k2,2n \\
             | bgzip -@ ${task.cpus} \\
             > ${meta.id}_filtered.bed.gz
     else
@@ -165,9 +170,13 @@ process PREPROCESS_SAMPLE {
                 /^#/{next}
                 \$4 > min_cov { print \$1, \$2, \$3, \$4, \$5 }
               ' \\
+            | sort -k1,1 -k2,2n \\
             | bgzip -@ ${task.cpus} \\
             > ${meta.id}_filtered.bed.gz
     fi
+
+    # Tabix-index for downstream random-access reads (CALL_DMR region queries).
+    tabix -p bed -f ${meta.id}_filtered.bed.gz
 
     rm -f temp.vcf.gz temp.vcf.gz.tbi het_sites.bed
     """
@@ -176,11 +185,16 @@ process PREPROCESS_SAMPLE {
 // ============================================================================
 // Process: SPLIT_SEX_COMPONENTS
 // ----------------------------------------------------------------------------
-// Splits a preprocessed 5-col methylation BED into component files:
-//   - autosomal: chr1-22 only
-//   - chrX: non-PAR chrX only
-//   - chrY: full chrY
-// Only runs when params.include_sex_chromosomes is true.
+// Splits a preprocessed 5-col methylation BED into ploidy-aware compartments:
+//   - autosomal : chr1-22 + PAR1 + PAR2 (PAR is biologically diploid in both
+//                 sexes, so it joins the autosomal scope; chrY-PAR rows are
+//                 translated to chrX-PAR coordinates so the same locus is
+//                 not double-counted).
+//   - chrX      : non-PAR chrX only.
+//   - chrY      : non-PAR chrY only.
+// Each output is bgzipped + tabix-indexed (work-dir local) to support
+// random-access reads downstream. Only runs when
+// params.include_sex_chromosomes is true.
 // ============================================================================
 
 process SPLIT_SEX_COMPONENTS {
@@ -188,42 +202,87 @@ process SPLIT_SEX_COMPONENTS {
     tag "${meta.id}"
 
     input:
-        tuple val(meta), path(bed)
+        tuple val(meta), path(bed), path(_bed_tbi)
         path par_bed
 
     output:
         tuple val(meta),
               path("${meta.id}_autosomal.bed.gz"),
+              path("${meta.id}_autosomal.bed.gz.tbi"),
               path("${meta.id}_chrX.bed.gz"),
-              path("${meta.id}_chrY.bed.gz")
+              path("${meta.id}_chrX.bed.gz.tbi"),
+              path("${meta.id}_chrY.bed.gz"),
+              path("${meta.id}_chrY.bed.gz.tbi")
 
     script:
     """
     #!/bin/bash
     set -euo pipefail
 
-    # Autosomal rows (chr1-22 with optional 'chr' prefix).
+    # ------------------------------------------------------------------
+    # 1. Autosomal core (chr1-22)
+    # ------------------------------------------------------------------
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?([0-9]+)\$/' \\
+        > _auto_core.bed
+
+    # ------------------------------------------------------------------
+    # 2. PAR rows on chrX (kept as-is; chrom name normalised to "chrX")
+    # ------------------------------------------------------------------
+    zcat ${bed} \\
+        | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?X\$/' \\
+        | bedtools intersect -wa -a - -b ${par_bed} \\
+        | awk 'BEGIN{OFS="\\t"} { \$1 = "chrX"; print }' \\
+        > _par_from_x.bed
+
+    # ------------------------------------------------------------------
+    # 3. PAR rows on chrY → translated to chrX coordinates
+    #    PAR1: same numerical coord, just rename chr to chrX
+    #          (chrX/Y PAR1 share 10,001-2,781,479 in GRCh38)
+    #    PAR2: rename + offset by +98,813,480
+    #          (chrY 56,887,902-57,217,415 → chrX 155,701,382-156,030,895)
+    # ------------------------------------------------------------------
+    zcat ${bed} \\
+        | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?Y\$/' \\
+        | bedtools intersect -wa -a - -b ${par_bed} \\
+        | awk 'BEGIN{OFS="\\t"}
+               \$2 < 10000000 { \$1 = "chrX"; print; next }                 # PAR1
+               { \$1 = "chrX"; \$2 += 98813480; \$3 += 98813480; print }    # PAR2
+          ' \\
+        > _par_from_y_xfm.bed
+
+    # ------------------------------------------------------------------
+    # 4. Pool autosomes + PAR(X) + PAR(Y-translated), sort, bgzip, tabix
+    # ------------------------------------------------------------------
+    cat _auto_core.bed _par_from_x.bed _par_from_y_xfm.bed \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
         > ${meta.id}_autosomal.bed.gz
+    tabix -p bed -f ${meta.id}_autosomal.bed.gz
 
-    # Non-PAR chrX. The bundled PAR BED contains both chr-prefixed and
-    # unprefixed contig names, so this works with either BED convention.
+    # ------------------------------------------------------------------
+    # 5. Non-PAR chrX
+    # ------------------------------------------------------------------
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?X\$/' \\
         | bedtools intersect -v -a - -b ${par_bed} \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
         > ${meta.id}_chrX.bed.gz
+    tabix -p bed -f ${meta.id}_chrX.bed.gz
 
-    # Full chrY. Y is handled as a male-specific exploratory component.
+    # ------------------------------------------------------------------
+    # 6. Non-PAR chrY
+    # ------------------------------------------------------------------
     zcat ${bed} \\
         | awk 'BEGIN{OFS="\\t"} \$1 ~ /^(chr)?Y\$/' \\
+        | bedtools intersect -v -a - -b ${par_bed} \\
         | sort -k1,1 -k2,2n \\
         | bgzip -@ ${task.cpus} \\
         > ${meta.id}_chrY.bed.gz
+    tabix -p bed -f ${meta.id}_chrY.bed.gz
+
+    rm -f _auto_core.bed _par_from_x.bed _par_from_y_xfm.bed
     """
 }
 
@@ -324,7 +383,7 @@ process SMOOTH_ATLAS {
         tuple val(scope), val(sigma), path("${out_file}"), emit: smoothed
 
     script:
-    out_file = scope == 'autosomal' ? "ref_atlas_${sigma}.tsv.gz" : "ref_atlas_${sigma}_${scope}.tsv.gz"
+    out_file = scope == 'autosomal' ? "ref_atlas_${sigma}.bed.gz" : "ref_atlas_${sigma}_${scope}.bed.gz"
     """
     #!/usr/bin/env Rscript
     suppressPackageStartupMessages({
@@ -422,7 +481,12 @@ process SMOOTH_ATLAS {
     final_output <- final_dt[, .(CHROM, START, END, N, COV, PHI, RAW_METH, REF_METH, REF_VAR)]
 
     out_file <- "${out_file}"
-    fwrite(final_output, out_file, sep = "\\t", nThread = threads)
+    # Write headerless BED (CHROM, START, END, N, COV, PHI, RAW_METH, REF_METH,
+    # REF_VAR), then bgzip in-place. Consumers supply column names via fread's
+    # col.names argument and tabix-index on the fly when random-access is needed.
+    raw_bed <- sub("\\\\.bed\\\\.gz\$", ".bed", out_file)
+    fwrite(final_output, raw_bed, sep = "\\t", col.names = FALSE, nThread = threads)
+    system2("bgzip", c("-@", as.character(threads), "-f", raw_bed))
     message(sprintf("Written %d sites to %s", nrow(final_output), out_file))
     """
 }
@@ -471,8 +535,10 @@ process DETECT_CPG_ISLANDS {
                "${out_file}", sep="\\t", col.names=TRUE)
     }
 
-    # Step 1: Load and filter atlas
-    ref_atlas <- fread("${ref_atlas}")
+    # Step 1: Load and filter atlas (headerless BED; supply column names)
+    ref_atlas <- fread("${ref_atlas}",
+                       col.names = c("CHROM", "START", "END", "N", "COV",
+                                     "PHI", "RAW_METH", "REF_METH", "REF_VAR"))
     ref_atlas[, CHROM := as.character(CHROM)]
     cat("  Loaded", nrow(ref_atlas), "sites\\n")
 
@@ -632,8 +698,19 @@ process DETECT_ICR_REGIONS {
         quit(save="no")
     }
 
-    atlas <- fread(cmd = sprintf("zcat %s", "${ref_atlas}"),
-                   select = c("CHROM", "START", "END", "N", "REF_METH"))
+    # Restrict atlas read to imprinting candidate intervals via tabix (~14 Mb
+    # of the 3 Gb genome — ~200x less I/O than a full atlas scan).
+    fwrite(candidates[, .(CHROM, START, END)], "_icr_query.bed",
+           sep = "\\t", col.names = FALSE)
+    if (!file.exists(paste0("${ref_atlas}", ".tbi"))) {
+        system2("tabix", c("-p", "bed", "-f", "${ref_atlas}"))
+    }
+
+    # Headerless atlas: cols 1=CHROM 2=START 3=END 4=N 5=COV 6=PHI 7=RAW_METH
+    # 8=REF_METH 9=REF_VAR. Only CHROM/START/END/N/REF_METH are needed here.
+    atlas <- fread(cmd = sprintf("tabix -R _icr_query.bed %s", "${ref_atlas}"),
+                   select = c(1L, 2L, 3L, 4L, 8L),
+                   col.names = c("CHROM", "START", "END", "N", "REF_METH"))
     atlas[, CHROM := normalize_primary_chrom(CHROM)]
     atlas <- atlas[CHROM %in% paste0("chr", 1:22)]
     atlas[, `:=`(START = as.integer(START), END = as.integer(END))]
@@ -695,9 +772,9 @@ process CALL_DMR {
     tag "${meta.id}_${meta.type}_${panel_scope}"
 
     input:
-        tuple val(meta), path(sample_bed), path(ref_atlas), path(cpg_panel),
-              val(panel_scope), val(diff_threshold), val(min_sites),
-              val(ref_meth_min), val(ref_meth_max)
+        tuple val(meta), path(sample_bed), path(sample_tbi),
+              path(ref_atlas), path(cpg_panel),
+              val(panel_scope), val(diff_threshold), val(min_sites)
         path icr_panel
 
     output:
@@ -716,8 +793,6 @@ process CALL_DMR {
     panel_scope <- "${panel_scope}"
     cpg_diff_threshold    <- ${diff_threshold}
     cpg_min_sites         <- ${min_sites}
-    ref_meth_min          <- ${ref_meth_min}
-    ref_meth_max          <- ${ref_meth_max}
     icr_diff_threshold    <- ${params.icr_diff_threshold}
     merge_distance        <- ${params.dmr_merge_distance}
     fdr_threshold         <- ${params.dmr_fdr_threshold}
@@ -737,9 +812,9 @@ process CALL_DMR {
     allowed_chroms <- paste0("chr", 1:22)
     if (include_sex) allowed_chroms <- c(allowed_chroms, "chrX", "chrY")
 
-    message(sprintf("Processing sample: %s (%s) | scope=%s | diff>%.2f | ref_meth [%.2f, %.2f]",
+    message(sprintf("Processing sample: %s (%s) | scope=%s | diff>%.2f",
                     sample_id, sample_type, panel_scope,
-                    cpg_diff_threshold, ref_meth_min, ref_meth_max))
+                    cpg_diff_threshold))
 
     # ---- Helper functions ----
     find_sites_in_regions <- function(sites, regions, start_col, end_col) {
@@ -799,24 +874,59 @@ process CALL_DMR {
         merged[!is.na(P_FDR) & P_FDR < fdr_threshold & NUM_CPG > min_sites]
     }
 
-    # ---- Load data (with chromosome filter) ----
-    message("Loading sample data...")
-    sample_data <- fread(cmd = sprintf("zcat %s", "${sample_bed}"),
+    # ---- Build tabix-query BED covering CpG panel (+ ICR panel for autosomal) ----
+    # CALL_DMR only needs atlas + sample sites that overlap a panel region,
+    # which is ~1-2% of hg38 — restricting reads to those intervals via
+    # tabix makes the I/O 50-100x cheaper than full sequential decompression.
+    cpg_query <- fread("${cpg_panel}", header = TRUE)
+    if ("START_EXTEND" %in% names(cpg_query) && "END_EXTEND" %in% names(cpg_query)) {
+        cpg_query <- cpg_query[, .(CHROM, START = START_EXTEND, END = END_EXTEND)]
+    } else {
+        cpg_query <- cpg_query[, .(CHROM = .SD[[1]], START = .SD[[2]], END = .SD[[3]])]
+    }
+    cpg_query[, CHROM := normalize_primary_chrom(CHROM)]
+    cpg_query <- cpg_query[CHROM %in% allowed_chroms]
+    if (run_icr && file.exists("${icr_panel}")) {
+        icr_query <- fread("${icr_panel}", header = TRUE)
+        icr_query <- icr_query[, .(CHROM = .SD[[1]], START = .SD[[2]], END = .SD[[3]])]
+        icr_query[, CHROM := normalize_primary_chrom(CHROM)]
+        icr_query <- icr_query[CHROM %in% paste0("chr", 1:22)]
+        cpg_query <- rbindlist(list(cpg_query, icr_query), use.names = TRUE)
+    }
+    setorder(cpg_query, CHROM, START, END)
+    fwrite(cpg_query[, .(CHROM, START, END)], "_query.bed",
+           sep = "\\t", col.names = FALSE)
+    # tabix -R tolerates overlapping/redundant intervals, so no extra merge step.
+
+    # ---- Build per-task tabix indexes if missing (atlas, sample) ----
+    # Inputs from upstream processes already include .tbi siblings, but pre-built
+    # atlases supplied via --ref_atlas may not. Re-index cheaply to be safe.
+    if (!file.exists(paste0("${ref_atlas}", ".tbi"))) {
+        system2("tabix", c("-p", "bed", "-f", "${ref_atlas}"))
+    }
+    if (!file.exists(paste0("${sample_bed}", ".tbi"))) {
+        system2("tabix", c("-p", "bed", "-f", "${sample_bed}"))
+    }
+
+    # ---- Load data (panel-restricted via tabix) ----
+    message("Loading sample data (panel-restricted)...")
+    sample_data <- fread(cmd = sprintf("tabix -R _query.bed %s", "${sample_bed}"),
                          col.names = c("CHROM", "START", "END", "COVERAGE", "N_METH"))
     sample_data[, CHROM := normalize_primary_chrom(CHROM)]
     sample_data <- sample_data[CHROM %in% allowed_chroms]
     sample_data[, SAMPLE_METH := N_METH / COVERAGE]
+    message(sprintf("  Sample sites in panel: %d", nrow(sample_data)))
 
-    message("Loading reference atlas...")
-    ref_atlas <- fread(cmd = sprintf("zcat %s", "${ref_atlas}"),
-                       select = c("CHROM", "START", "END", "REF_METH", "REF_VAR"))
+    message("Loading reference atlas (panel-restricted)...")
+    # Atlas has 9 columns: CHROM, START, END, N, COV, PHI, RAW_METH, REF_METH, REF_VAR.
+    ref_atlas <- fread(cmd = sprintf("tabix -R _query.bed %s", "${ref_atlas}"),
+                       col.names = c("CHROM", "START", "END", "N", "COV",
+                                     "PHI", "RAW_METH", "REF_METH", "REF_VAR"))
     ref_atlas[, CHROM := normalize_primary_chrom(CHROM)]
     ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
-    # Restrict atlas to the expected REF_METH band. Component scopes use
-    # [0, 1] for DMR calling by default; female_X island selection happens
-    # upstream in DETECT_CPG_ISLANDS.
-    ref_atlas <- ref_atlas[REF_METH >= ref_meth_min & REF_METH <= ref_meth_max]
-    message(sprintf("  Atlas after REF_METH filter: %d sites", nrow(ref_atlas)))
+    # NB: female_X hemi-methylated band [0.40, 0.60] is enforced upstream in
+    # DETECT_CPG_ISLANDS, so no additional REF_METH band filter is applied here.
+    message(sprintf("  Atlas sites in panel: %d", nrow(ref_atlas)))
 
     message("Loading CpG panel...")
     cpg_panel <- fread("${cpg_panel}")
@@ -1153,33 +1263,36 @@ workflow {
 
         // Sex is supplied per sample in the samplesheet (M/F) and already
         // attached to meta by parse_samplesheet. Split each preprocessed BED
-        // into chr1-22 / non-PAR chrX / chrY using meta.sex.
+        // into autosomal (chr1-22 + PAR) / non-PAR chrX / non-PAR chrY,
+        // emitting a tabix index alongside each component bed.
+        // Tuple: (meta, auto_bed, auto_tbi, chrX_bed, chrX_tbi, chrY_bed, chrY_tbi)
         ch_split = SPLIT_SEX_COMPONENTS(ch_all_preprocessed, ch_par_bed)
 
         // ---- Per-scope CTRL beds for atlas building ----
+        // BUILD_ATLAS reads sequentially; .tbi files are not needed there.
         ch_ctrl_autosomal = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' }
-            .map    { _meta, a, _x, _y -> a }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'ctrl' }
+            .map    { _meta, a, _at, _x, _xt, _y, _yt -> a }
             .collect()
             .map    { beds -> ['autosomal', beds] }
 
         ch_ctrl_male_X = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' && meta.sex == 'M' }
-            .map    { _meta, _a, x, _y -> x }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'ctrl' && meta.sex == 'M' }
+            .map    { _meta, _a, _at, x, _xt, _y, _yt -> x }
             .collect()
             .filter { beds -> beds.size() >= (params.sex_atlas_min_controls as int) }
             .map    { beds -> ['male_X', beds] }
 
         ch_ctrl_female_X = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' && meta.sex == 'F' }
-            .map    { _meta, _a, x, _y -> x }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'ctrl' && meta.sex == 'F' }
+            .map    { _meta, _a, _at, x, _xt, _y, _yt -> x }
             .collect()
             .filter { beds -> beds.size() >= (params.sex_atlas_min_controls as int) }
             .map    { beds -> ['female_X', beds] }
 
         ch_ctrl_Y = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'ctrl' && meta.sex == 'M' }
-            .map    { _meta, _a, _x, y -> y }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'ctrl' && meta.sex == 'M' }
+            .map    { _meta, _a, _at, _x, _xt, y, _yt -> y }
             .collect()
             .filter { beds -> beds.size() >= (params.sex_atlas_min_controls as int) }
             .map    { beds -> ['Y', beds] }
@@ -1190,21 +1303,22 @@ workflow {
             .mix(ch_ctrl_Y)
 
         // ---- Per-scope CASE beds for CALL_DMR ----
+        // CALL_DMR uses tabix region queries; .tbi staged alongside .bed.gz.
         ch_case_autosomal = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'case' }
-            .map    { meta, a, _x, _y -> ['autosomal', meta, a] }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'case' }
+            .map    { meta, a, at, _x, _xt, _y, _yt -> ['autosomal', meta, a, at] }
 
         ch_case_male_X = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'case' && meta.sex == 'M' }
-            .map    { meta, _a, x, _y -> ['male_X', meta, x] }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'case' && meta.sex == 'M' }
+            .map    { meta, _a, _at, x, xt, _y, _yt -> ['male_X', meta, x, xt] }
 
         ch_case_Y = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'case' && meta.sex == 'M' }
-            .map    { meta, _a, _x, y -> ['Y', meta, y] }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'case' && meta.sex == 'M' }
+            .map    { meta, _a, _at, _x, _xt, y, yt -> ['Y', meta, y, yt] }
 
         ch_case_female_X = ch_split
-            .filter { meta, _a, _x, _y -> meta.type == 'case' && meta.sex == 'F' }
-            .map    { meta, _a, x, _y -> ['female_X', meta, x] }
+            .filter { meta, _a, _at, _x, _xt, _y, _yt -> meta.type == 'case' && meta.sex == 'F' }
+            .map    { meta, _a, _at, x, xt, _y, _yt -> ['female_X', meta, x, xt] }
 
         ch_case_scopes = ch_case_autosomal
             .mix(ch_case_male_X)
@@ -1212,16 +1326,19 @@ workflow {
             .mix(ch_case_Y)
 
     } else {
-        // Autosomal-only: single 'autosomal' scope
+        // Autosomal-only: single 'autosomal' scope. ch_all_preprocessed
+        // tuple is (meta, bed, tbi); BUILD_ATLAS reads sequentially so
+        // .tbi is dropped, CALL_DMR uses tabix region queries so .tbi
+        // is carried through.
         ch_build_atlas_input = ch_all_preprocessed
-            .filter { meta, _bed -> meta.type == 'ctrl' }
-            .map    { _meta, bed -> bed }
+            .filter { meta, _bed, _tbi -> meta.type == 'ctrl' }
+            .map    { _meta, bed, _tbi -> bed }
             .collect()
             .map    { beds -> ['autosomal', beds] }
 
         ch_case_scopes = ch_all_preprocessed
-            .filter { meta, _bed -> meta.type == 'case' }
-            .map    { meta, bed -> ['autosomal', meta, bed] }
+            .filter { meta, _bed, _tbi -> meta.type == 'case' }
+            .map    { meta, bed, tbi -> ['autosomal', meta, bed, tbi] }
     }
 
     // ====================================================================
@@ -1302,14 +1419,12 @@ workflow {
     // ====================================================================
     ch_dmr_input = ch_case_scopes
         .combine(ch_refs_by_scope, by: 0)
-        // (scope, meta, sample_bed, atlas, panel)
-        .map { scope, meta, bed, atlas, panel ->
+        // (scope, meta, sample_bed, sample_tbi, atlas, panel)
+        .map { scope, meta, bed, tbi, atlas, panel ->
             def is_female_x = scope == 'female_X'
             def diff_thresh = is_female_x ? params.sex_f_diff_threshold : params.dmr_cpg_diff_threshold
             def min_sites   = is_female_x ? params.sex_f_min_sites : params.dmr_cpg_min_sites
-            def ref_min     = 0.0
-            def ref_max     = 1.0
-            [meta, bed, atlas, panel, scope, diff_thresh, min_sites, ref_min, ref_max]
+            [meta, bed, tbi, atlas, panel, scope, diff_thresh, min_sites]
         }
 
     ch_dmr_raw = CALL_DMR(ch_dmr_input, ch_icr_panel)
