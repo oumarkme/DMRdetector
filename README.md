@@ -64,7 +64,7 @@ Outputs land under `results/`. Subsequent runs can reuse the atlas and
 panels — see [Reusing references](#reusing-references-for-faster-reruns).
 
 > **No control cohort?** Skip the atlas build entirely and call DMRs against
-> the published 63-genome reference on Zenodo
+> the published 69-genome reference on Zenodo
 > ([10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867)) —
 > see [Download the published reference atlas](#download-the-published-reference-atlas-zenodo).
 
@@ -445,7 +445,7 @@ nextflow run main.nf \
     --include_sex_chromosomes false
 ```
 
-> **Tip:** No control cohort of your own? Use the published 63-genome atlas —
+> **Tip:** No control cohort of your own? Use the published 69-genome atlas —
 > see [Download the published reference atlas](#download-the-published-reference-atlas-zenodo).
 
 ---
