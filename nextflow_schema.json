@@ -89,14 +89,14 @@
         },
         "icr_ref_meth_min": {
           "type": "number",
-          "default": 0.35,
+          "default": 0.40,
           "minimum": 0,
           "maximum": 1,
           "description": "Lower REF_METH bound for defining hemi-methylated ICRs from an atlas."
         },
         "icr_ref_meth_max": {
           "type": "number",
-          "default": 0.65,
+          "default": 0.60,
           "minimum": 0,
           "maximum": 1,
           "description": "Upper REF_METH bound for defining hemi-methylated ICRs from an atlas."

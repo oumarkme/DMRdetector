@@ -909,9 +909,26 @@ process CALL_DMR {
     }
 
     # ---- Load data (panel-restricted via tabix) ----
+    # Helper: tabix -R returning zero rows makes fread emit a NULL data.table
+    # (no columns), which then breaks any [, X := ...] reference. Materialise
+    # an explicit empty data.table with the expected schema so downstream
+    # code can treat empty == "no DMRs" instead of crashing.
+    safe_fread_tabix <- function(cmd_str, col_names, col_classes) {
+        dt <- fread(cmd = cmd_str, col.names = col_names)
+        if (nrow(dt) == 0L || ncol(dt) == 0L) {
+            empty <- vector("list", length(col_names))
+            for (i in seq_along(col_names)) empty[[i]] <- col_classes[[i]](0L)
+            names(empty) <- col_names
+            dt <- as.data.table(empty)
+        }
+        dt
+    }
+
     message("Loading sample data (panel-restricted)...")
-    sample_data <- fread(cmd = sprintf("tabix -R _query.bed %s", "${sample_bed}"),
-                         col.names = c("CHROM", "START", "END", "COVERAGE", "N_METH"))
+    sample_data <- safe_fread_tabix(
+        sprintf("tabix -R _query.bed %s", "${sample_bed}"),
+        c("CHROM", "START", "END", "COVERAGE", "N_METH"),
+        list(character, integer, integer, integer, integer))
     sample_data[, CHROM := normalize_primary_chrom(CHROM)]
     sample_data <- sample_data[CHROM %in% allowed_chroms]
     sample_data[, SAMPLE_METH := N_METH / COVERAGE]
@@ -919,9 +936,12 @@ process CALL_DMR {
 
     message("Loading reference atlas (panel-restricted)...")
     # Atlas has 9 columns: CHROM, START, END, N, COV, PHI, RAW_METH, REF_METH, REF_VAR.
-    ref_atlas <- fread(cmd = sprintf("tabix -R _query.bed %s", "${ref_atlas}"),
-                       col.names = c("CHROM", "START", "END", "N", "COV",
-                                     "PHI", "RAW_METH", "REF_METH", "REF_VAR"))
+    ref_atlas <- safe_fread_tabix(
+        sprintf("tabix -R _query.bed %s", "${ref_atlas}"),
+        c("CHROM", "START", "END", "N", "COV",
+          "PHI", "RAW_METH", "REF_METH", "REF_VAR"),
+        list(character, integer, integer, integer, integer,
+             numeric, numeric, numeric, numeric))
     ref_atlas[, CHROM := normalize_primary_chrom(CHROM)]
     ref_atlas <- ref_atlas[CHROM %in% allowed_chroms]
     # NB: female_X hemi-methylated band [0.40, 0.60] is enforced upstream in
@@ -1038,6 +1058,8 @@ process ANNOTATE_DMRS {
 
     input:
         tuple val(meta), path(dmr_raws)
+        path icr_panel
+        path icr_gene_list
 
     output:
         path "dmr_${meta.id}_${meta.type}.tsv", optional: true
@@ -1141,6 +1163,55 @@ process ANNOTATE_DMRS {
         gene_vec[qh_o[best]] <- .symbol_lookup[sh_o[best]]
     }
     dmrs[, GENE := gene_vec]
+
+    # --- Override GENE for ICR rows using the panel's GENE symbol ---
+    # The ICR panel uses curated imprinting-genetics gene symbols (e.g. ZNF597).
+    # EnsDb may resolve the same coordinate to a clone-based or antisense
+    # transcript symbol (e.g. LA16c-306E5.2). Prefer the panel symbol whenever
+    # an ICR-panel DMR overlaps an entry in the ICR panel BED.
+    if (any(dmrs\$PANEL == "ICR") && file.exists("${icr_panel}")) {
+        icr_panel_dt <- fread("${icr_panel}")
+        if (nrow(icr_panel_dt) > 0 && "GENE" %in% names(icr_panel_dt)) {
+            icr_panel_dt <- icr_panel_dt[, .(CHROM, START, END, PANEL_GENE = GENE)]
+            icr_panel_dt[, CHROM := normalize_primary_chrom(CHROM)]
+            icr_panel_dt[, `:=`(START = as.integer(START), END = as.integer(END))]
+
+            # Gene-list span per gene → tiebreaker when several imprinted genes
+            # share an ICR locus (e.g. ZNF597 and NAA60 at chr16:3.43-3.49 Mb).
+            # Shorter gene-list span = more specific imprinting annotation.
+            gene_span <- NULL
+            if (file.exists("${icr_gene_list}")) {
+                gl <- fread("${icr_gene_list}")
+                gl <- gl[, 1:min(4, ncol(gl)), with = FALSE]
+                setnames(gl, c("CHROM", "START", "END", "GENE"))
+                gl[, span_width := as.integer(END) - as.integer(START)]
+                gene_span <- gl[, .(min_span = min(span_width)), by = GENE]
+                setnames(gene_span, "GENE", "PANEL_GENE")
+            }
+
+            icr_idx <- which(dmrs\$PANEL == "ICR")
+            if (length(icr_idx) > 0L) {
+                icr_dmrs_dt <- dmrs[icr_idx, .(CHROM, START = as.integer(START),
+                                               END = as.integer(END), .row = icr_idx)]
+                setkey(icr_panel_dt, CHROM, START, END)
+                setkey(icr_dmrs_dt, CHROM, START, END)
+                ov <- foverlaps(icr_dmrs_dt, icr_panel_dt, nomatch = NULL)
+                if (nrow(ov) > 0L) {
+                    ov[, ov_width := pmin(END, i.END) - pmax(START, i.START) + 1L]
+                    if (!is.null(gene_span)) {
+                        ov <- merge(ov, gene_span, by = "PANEL_GENE", all.x = TRUE)
+                        ov[is.na(min_span), min_span := .Machine\$integer.max]
+                    } else {
+                        ov[, min_span := 0L]
+                    }
+                    # Largest overlap, then smallest gene-list span.
+                    setorder(ov, .row, -ov_width, min_span, PANEL_GENE)
+                    ov <- ov[!duplicated(.row)]
+                    dmrs[ov\$.row, GENE := ov\$PANEL_GENE]
+                }
+            }
+        }
+    }
 
     # --- Final formatting + write ---
     for (col in output_cols) if (!col %in% names(dmrs)) dmrs[, (col) := NA]
@@ -1434,5 +1505,5 @@ workflow {
     // first slot (meta) correctly merges autosomal + X/Y records.
     ch_dmr_grouped = ch_dmr_raw.groupTuple()
 
-    ANNOTATE_DMRS(ch_dmr_grouped)
+    ANNOTATE_DMRS(ch_dmr_grouped, ch_icr_panel, ch_icr_gene_list)
 }

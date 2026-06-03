@@ -37,7 +37,7 @@
 | **Atlas method** | Beta-Binomial dispersion + empirical Bayes shrinkage + FFT-based Gaussian smoothing |
 | **Atlas format** | Tabix-indexable bgzipped BED (`ref_atlas_*.bed.gz`); panel-restricted region queries cut atlas I/O 50–100× |
 | **CpG islands** | CORE/SHORE classification from population methylation (no GC-content threshold) |
-| **ICRs** | Hemi-methylated sites (50% ± 15%) within 134 imprinted genes ± 5 kb |
+| **ICRs** | Hemi-methylated sites (50% ± 10%) within 122 imprinted genes ± 5 kb |
 | **DMR test** | One-sample t-test on per-CpG `DIFF`, BH FDR per panel |
 | **Sex chromosomes** | Ploidy-aware partition: autosomal (chr1–22 + PAR pooled); non-PAR male_X / female_X / Y atlases; female_X uses hemi-methylated (40–60%) X-inactivation model |
 | **Annotation** | `EnsDb.Hsapiens.v86` (offline GRCh38; biotype-prioritised) |
@@ -62,6 +62,11 @@ nextflow run main.nf \
 
 Outputs land under `results/`. Subsequent runs can reuse the atlas and
 panels — see [Reusing references](#reusing-references-for-faster-reruns).
+
+> **No control cohort?** Skip the atlas build entirely and call DMRs against
+> the published 63-genome reference on Zenodo
+> ([10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867)) —
+> see [Download the published reference atlas](#download-the-published-reference-atlas-zenodo).
 
 > **No conda yet?** Install [Miniforge](https://github.com/conda-forge/miniforge#install)
 > (recommended — bundles `mamba` and uses `conda-forge` by default), then
@@ -137,7 +142,7 @@ Preprocessing (all samples)
         │           ├─ CORE  (REF_METH < 10%, φ < 0.05)
         │           ├─ SHORE (REF_METH < 30%, ≤ 150 bp from CORE)
         │           ├─ Cluster, length & density filter, ±150 bp boundary extension
-        │           └─ ICRs  (50% ± 15% in 134 imprinted genes ± 5 kb)
+        │           └─ ICRs  (50% ± 10% in 122 imprinted genes ± 5 kb)
         │       ⇒ cpg_signal.bed, icr_region.bed
         │
         └──► CASE stream — Stage 3 — Targeted DMRs
@@ -315,11 +320,15 @@ The atlas is a headerless bgzipped BED with 9 columns; column names are
 supplied by downstream consumers. Compatible with `tabix -R panel.bed`
 for fast random access (`-p bed`).
 
-`CHROM, START, END, REF_METH, REF_VAR, COV, N_SAMPLES, PHI`
+`CHROM, START, END, N, COV, PHI, RAW_METH, REF_METH, REF_VAR`
 
+- `N`        — number of contributing control samples at the site.
+- `COV`      — total read coverage pooled across those controls.
+- `PHI`      — shrunken inter-individual dispersion (empirical Bayes).
+- `RAW_METH` — coverage-weighted mean methylation **before** smoothing (0–1).
 - `REF_METH` — coverage-weighted, Gaussian-smoothed mean methylation (0–1).
-- `REF_VAR`  — expected biological variance under Beta-Binomial.
-- `PHI`      — shrunken inter-individual dispersion.
+- `REF_VAR`  — expected biological variance under Beta-Binomial
+               (`REF_METH·(1−REF_METH)·PHI`).
 
 ### DMR TSV columns (`dmr_<sample>_case.tsv`)
 
@@ -357,6 +366,52 @@ Stage 1 (atlas) and Stage 2 (CpG / ICR panels) are the slow steps. Once
 they exist, **subsequent runs can skip them** and only recompute the
 per-CASE DMR calls.
 
+### Download the published reference atlas (Zenodo)
+
+Most diagnostic users have **no in-house control cohort** — and don't need
+one. A ready-to-use reference set built from **69 ONT control whole-blood
+genomes** is published on Zenodo and drops straight into the reuse flags:
+
+> 📦 **[10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867)**
+> — pre-built σ = 150 bp and σ = 500 bp atlases · 28,624,561 autosomal CpG
+> sites · 25,719 CpG islands · 445 ICRs across 122 imprinted genes (hg38).
+> MIT-licensed, free to redistribute.
+
+Download the record and unpack it into a `reference/` directory. The archive
+mirrors the pipeline's own output layout, so the filenames match the
+`--ref_atlas` / `--cpg_panel` / `--icr_panel` flags one-to-one:
+
+```
+reference/
+├── ref_atlas_150.bed.gz            ref_atlas_150_male_X.bed.gz
+├── ref_atlas_150_female_X.bed.gz   ref_atlas_150_Y.bed.gz
+├── cpg_signal.bed                  cpg_signal_male_X.bed
+├── cpg_signal_female_X.bed         cpg_signal_Y.bed
+└── icr_region.bed
+```
+
+Then run a **CASE-only** samplesheet against it — Stages 1 and 2 are bypassed
+and only per-CASE DMRs are computed:
+
+```bash
+nextflow run main.nf \
+    --input  cases.csv \
+    --outdir results \
+    --ref_atlas          reference/ref_atlas_150.bed.gz \
+    --ref_atlas_male_X   reference/ref_atlas_150_male_X.bed.gz \
+    --ref_atlas_female_X reference/ref_atlas_150_female_X.bed.gz \
+    --ref_atlas_Y        reference/ref_atlas_150_Y.bed.gz \
+    --cpg_panel          reference/cpg_signal.bed \
+    --cpg_panel_male_X   reference/cpg_signal_male_X.bed \
+    --cpg_panel_female_X reference/cpg_signal_female_X.bed \
+    --cpg_panel_Y        reference/cpg_signal_Y.bed \
+    --icr_panel          reference/icr_region.bed
+```
+
+The published atlas is hg38/GRCh38 only. To call DMRs against your **own**
+freshly built references instead, use the same flags with the paths emitted
+under `results/` — see below.
+
 ### Sex-stratified reuse (recommended)
 
 ```bash
@@ -390,9 +445,8 @@ nextflow run main.nf \
     --include_sex_chromosomes false
 ```
 
-> **Tip:** A pre-built reference atlas constructed from 63 ONT control
-> whole-blood genomes is archived at Zenodo:
-> [10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867).
+> **Tip:** No control cohort of your own? Use the published 63-genome atlas —
+> see [Download the published reference atlas](#download-the-published-reference-atlas-zenodo).
 
 ---
 
@@ -502,9 +556,9 @@ rather than sample-specific segmentations.
 
 Imprinted loci are hemi-methylated (≈ 50%) and are therefore excluded from
 the hypomethylated CpG island set. A separate panel is built: a curated
-list of **134 imprinted genes** from geneimprint.com is intersected with
+list of **122 imprinted genes** from geneimprint.com is intersected with
 Ensembl GRCh38 coordinates and extended ±5 kb. Within each region, CpG
-sites with **REF_METH 50% ± 15%** (`[0.35, 0.65]`) and inter-site distances
+sites with **REF_METH 50% ± 10%** (`[0.40, 0.60]`) and inter-site distances
 < 150 bp are grouped into ICRs.
 
 ### Stage 3 — Targeted DMR detection
@@ -594,8 +648,8 @@ Ensembl `gene_id`.
 
 | Parameter            | Default | Description |
 |----------------------|---------|-------------|
-| `icr_ref_meth_min`   | 0.35    | Lower REF_METH bound (50% − 15%). |
-| `icr_ref_meth_max`   | 0.65    | Upper REF_METH bound (50% + 15%). |
+| `icr_ref_meth_min`   | 0.40    | Lower REF_METH bound (50% − 10%). |
+| `icr_ref_meth_max`   | 0.60    | Upper REF_METH bound (50% + 10%). |
 | `icr_diff_threshold` | 0.25    | DMR `|DIFF|` cutoff for ICR panel. |
 | `icr_min_sites`      | 5       | Min CpG count per ICR DMR. |
 
@@ -668,16 +722,18 @@ Ensembl `gene_id`.
 
 If you use DMRdetector, please cite:
 
-> Ou J-H, Tsai M, *et al.* **Quick detection of differentially methylated
-> regions for CpG islands and imprinted CpGs based on an ONT methylation
-> reference atlas.** Department of Medical Genetics, National Taiwan
-> University Hospital. (Manuscript in preparation, 2026.)
+> Ou J-H\*, Tsai M-JM\*, Hsu R-H, Chen H-A, Wu C-S, Chao M-Y, Hsu C,
+> Chien Y-H, Lee N-C, Hwu W-L. **Detecting differentially methylated regions
+> at CpG islands and imprinted loci with an ONT methylation atlas.**
+> Department of Medical Genetics, National Taiwan University Hospital,
+> Taipei, Taiwan. (Manuscript in preparation, 2026.)
+> *\*These authors contributed equally.*
 
 The pipeline and pre-built atlases are freely available at
 <https://github.com/oumarkme/DMRdetector> under the MIT licence. A
-pre-built reference atlas constructed from 63 ONT control whole-blood
-genomes (30,119,904 CpG sites; 25,901 CpG islands; 407 ICRs across 124
-imprinted genes) is archived at Zenodo:
+pre-built reference atlas constructed from 69 ONT control whole-blood
+genomes (28,624,561 autosomal CpG sites; 25,719 CpG islands; 445 ICRs
+across 122 imprinted genes) is archived at Zenodo:
 [10.5281/zenodo.18978867](https://doi.org/10.5281/zenodo.18978867).
 
 ### Selected method references
