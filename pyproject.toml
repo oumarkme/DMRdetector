@@ -1,0 +1,67 @@
+# Packaging metadata for `pip install`. The reference environment is the
+# container image (env/); this file does not replace env/requirements.lock.
+#
+# - The version has one source, src/dmrdetector/__init__.py.
+# - The ranges of `dependencies` are the minor series of the versions in
+#   env/requirements.lock (compatible release, `~=`). Only the locked versions
+#   are tested; change the ranges whenever the lock changes
+#   (tests/unit/test_container_recipes.py checks that they admit the lock).
+# - The file holds no linter, formatter or pytest configuration, by design.
+#   The only [tool.*] tables are the three under [tool.setuptools] that
+#   setuptools needs to read the version and to find the package and its data
+#   files.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmrdetector"
+dynamic = ["version"]
+description = "DMR detection from long-read methylation data (ONT or PacBio, hg38) for single patients"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jen-Hsiang Ou" }]
+keywords = [
+    "DNA methylation",
+    "differentially methylated regions",
+    "imprinting",
+    "Oxford Nanopore",
+    "PacBio",
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy~=2.5.3",
+    "scipy~=1.18.1",
+    "pandas~=3.0.6",
+    "pysam~=0.24.1",
+    "numba~=0.68.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+dmrdetector = "dmrdetector.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/oumarkme/DMRdetector"
+Source = "https://github.com/oumarkme/DMRdetector"
+Issues = "https://github.com/oumarkme/DMRdetector/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "dmrdetector.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dmrdetector*"]
+
+[tool.setuptools.package-data]
+dmrdetector = ["data/assets/*"]

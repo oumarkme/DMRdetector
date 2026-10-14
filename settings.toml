@@ -1,0 +1,108 @@
+# DMRdetector settings: every option of `dmrdetector build` and `dmrdetector run` with its default value.
+# The file is read from ./settings.toml in the working directory, or from the file given by --config FILE.
+# Precedence: flag > --set KEY=VALUE > this file > built-in default (a flag and --set for the same key is an error).
+# Delete a line to restore the default of its key. Keys without a default are commented out; remove the # to set them.
+# `dmrdetector config show run` lists the values in force. Create this file with `dmrdetector config init`.
+# Key names are the parameter names of the earlier R/Nextflow version (v2.2) where one exists.
+
+[input]
+# methylation BED format: auto (detect), 5col, modkit (bedMethyl, 18 columns) or pbcpg (pb-CpG-tools, 9 columns) (used by: build and run)
+input_format = "auto"
+
+[reference]
+# reference directory written by `build` (v2.2 layout accepted) (used by: run)
+# reference = ""
+# Ensembl GRCh38 GTF (plain or .gz); `dmrdetector get-genes` downloads one (used by: run)
+# gtf = ""
+
+[atlas]
+# keep a CpG only when at least this many CTRL samples cover it (used by: build)
+atlas_min_samples_per_site = 3
+# keep a CpG of a CTRL sample only when its read coverage is above this (used by: build)
+atlas_min_read_coverage = 5
+# weight of the global trend in the shrunken per-site dispersion (0 to 1) (used by: build)
+atlas_shrinkage_weight = 0.1
+# Gaussian smoothing sigma of the reference atlas (bp); also names ref_atlas_<sigma>.bed.gz (used by: build and run)
+smooth_sigma = 150
+
+[cpg_islands]
+# number of CTRL samples per atlas site: CpG island panels use sites with more than this many (ICR panel: at least this many); not the CpG count of icr_min_sites (used by: build)
+cpg_min_samples_per_site = 5
+# island core: reference methylation below this (used by: build)
+cpg_core_max_methylation = 0.1
+# island core: reference dispersion (PHI) below this (used by: build)
+cpg_core_max_dispersion = 0.05
+# island shore: reference methylation below this (used by: build)
+cpg_shore_max_methylation = 0.3
+# largest gap (bp) between CpGs inside one island (used by: build)
+cpg_max_gap_distance = 150
+# shortest island (bp) (used by: build)
+cpg_min_island_length = 150
+
+[icr]
+# ICR: reference methylation at least this (hemi-methylated) (used by: build)
+icr_ref_meth_min = 0.4
+# ICR: reference methylation at most this (used by: build)
+icr_ref_meth_max = 0.6
+# CpGs per ICR: the ICR panel needs at least this many, an ICR DMR more than this many (not a number of controls; see cpg_min_samples_per_site) (used by: build and run)
+icr_min_sites = 5
+# ICR DMR calls: the absolute methylation difference to the reference must exceed this (used by: run)
+icr_diff_threshold = 0.25
+# count a CpG once per overlapping candidate gene as v2.2 did (false: once) (used by: build)
+icr_v1_duplicates = true
+
+[dmr]
+# keep a CpG of a tested sample only when its read coverage is above this (used by: run)
+dmr_min_coverage = 10
+# CpG island DMR calls: the absolute methylation difference must exceed this (used by: run)
+dmr_cpg_diff_threshold = 0.4
+# CpGs at most this far apart (bp) form one DMR (also groups ICR CpGs) (used by: build and run)
+dmr_merge_distance = 150
+# report DMRs with FDR (Benjamini-Hochberg) below this (used by: run)
+dmr_fdr_threshold = 0.01
+# CpG island DMR calls: a DMR needs more than this many CpGs (used by: run)
+dmr_cpg_min_sites = 30
+# read each CpG once when panel regions overlap (false reproduces v2.2, which repeats CpGs and inflates NUM_CPG) (used by: run)
+dmr_dedupe_sites = false
+
+[sex]
+# analyze chrX and chrY in sex-specific scopes (male_X, female_X, Y); false restricts to chr1-22 (used by: build and run)
+include_sex_chromosomes = true
+# minimum CTRL samples of a sex to build a sex-specific scope (used by: build)
+sex_atlas_min_controls = 3
+# female_X islands: reference methylation at least this (hemi-methylated) (used by: build)
+sex_f_ref_meth_min = 0.4
+# female_X islands: reference methylation at most this (used by: build)
+sex_f_ref_meth_max = 0.6
+# female_X DMR calls: the absolute methylation difference must exceed this (used by: run)
+sex_f_diff_threshold = 0.25
+# female_X DMR calls: a DMR needs more than this many CpGs (used by: run)
+sex_f_min_sites = 5
+
+[target]
+# BED of target regions, or "builtin" for the 21 regions packaged with the program; `run` then also writes <sample_id>.target_region.tsv (used by: run)
+# target_region = ""
+# include hap1/hap2 tracks when --meth_bed_hap1/--meth_bed_hap2 are given (used by: run)
+target_haplotypes = true
+# merged track: keep a CpG only when coverage is above this (used by: run)
+target_min_coverage = 8
+# hap1/hap2 tracks: keep a CpG only when coverage is above this (used by: run)
+target_hap_min_coverage = 4
+
+[paths]
+# folder of the output files of `run` (`build` takes --outdir on the command line) (used by: run)
+outdir = "dmrdetector"
+# folder for the temporary files (fast local disk; default: the system temporary directory, for `build` <outdir>/work) (used by: build and run)
+# tmp_dir = ""
+# paths in <sample_id>.log and build.log: name (the last component, and the size of an input file; safe to share) or full (absolute paths) (used by: build and run)
+log_input_paths = "name"
+# imprinting gene BED (default: bundled assets/icr_gene_list.bed); `build` stores its md5 in reference.json and `run` warns when its list differs (used by: build and run)
+# icr_gene_list = ""
+# hg38 PAR coordinates BED (default: bundled assets/par_hg38.bed) (used by: build and run)
+# par_bed = ""
+
+[resources]
+# maximum threads the pipeline may use at any moment, over all worker processes and their threads; memory is budgeted as 8 GB per thread. Minimum 2 (1 is raised to 2). Default: 50% of the available threads, at least 2 (used by: build and run)
+# threads = 0
+# keep the temporary folder and print its path (`build`: keep the work folder after success) (used by: build and run)
+keep_tmp = false

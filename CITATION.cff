@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "DMRdetector"
+abstract: "DMRdetector detects differentially methylated regions at CpG islands and imprinted control regions in a single patient from long-read methylation data (ONT or PacBio, hg38), by comparison with a reference atlas built from control samples."
+type: software
+version: "3.2.0"
+license: MIT
+repository-code: "https://github.com/oumarkme/DMRdetector"
+authors:
+  - family-names: Ou
+    given-names: Jen-Hsiang
+    affiliation: "Department of Medical Genetics, National Taiwan University Hospital"
+keywords:
+  - DNA methylation
+  - differentially methylated regions
+  - imprinting
+  - Oxford Nanopore
+  - PacBio

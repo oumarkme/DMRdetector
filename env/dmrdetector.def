@@ -1,0 +1,115 @@
+# DMRdetector image, Apptainer recipe. Build from the repository root:
+#   apptainer build --fakeroot dmrdetector.sif env/dmrdetector.def
+# Release builds require the compiled kernels (the build stops when the kernel
+# cache cannot be made, and the smoke test asserts that it loads):
+#   apptainer build --fakeroot --build-arg REQUIRE_CACHE=1 dmrdetector.sif env/dmrdetector.def
+# env/Dockerfile is the Docker recipe of the same image. The two files are written by hand; keep them in step
+# (tests/unit/test_container_recipes.py fails when the base image, the install command, the ENV lines, the libdeflate
+# pin or the version label differ).
+
+Bootstrap: docker
+From: python:3.12.15-slim-trixie@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+Stage: build
+
+%arguments
+  REQUIRE_CACHE=0
+
+%files
+  env/requirements.lock /build/requirements.lock
+  env/launcher.py /opt/dmrdetector/launcher.py
+  src /opt/dmrdetector/src
+  env/warm_cache.sh /build/warm_cache.sh
+  tests/smoke/generate_data.py /build/smoke/generate_data.py
+  tests/smoke/run_smoke.py /build/smoke/run_smoke.py
+  env/warm_big.py /build/smoke/warm_big.py
+
+%post
+  export PIP_NO_CACHE_DIR="1"
+  export PIP_DISABLE_PIP_VERSION_CHECK="1"
+  export PYTHONDONTWRITEBYTECODE="1"
+  export LIBDEFLATE_DEB_VERSION="1.23-2"
+  export LIBDEFLATE_DEB_SHA256="5fe37fb79d53f5c91da6ba3ac4c1a8453e1f2b1ff0e0ea45189c5338bbfdbf82"
+  mkdir -p /build && cd /build
+  apt-get update \
+   && apt-get install -y --no-install-recommends binutils \
+   && rm -rf /var/lib/apt/lists/*
+  python -m venv --without-pip /opt/venv \
+   && pip --python /opt/venv/bin/python install --require-hashes --only-binary=:all: --no-compile -r /build/requirements.lock \
+   && find /opt/dmrdetector/src -name __pycache__ -prune -exec rm -rf {} + \
+   && chmod -R a+rX /opt/dmrdetector \
+   && echo /opt/dmrdetector/src > /opt/venv/lib/python3.12/site-packages/dmrdetector.pth \
+   && install -m 755 /opt/dmrdetector/launcher.py /opt/venv/bin/dmrdetector
+  mkdir /build/deb && cd /build/deb \
+   && apt-get update \
+   && apt-get download libdeflate0=$LIBDEFLATE_DEB_VERSION \
+   && echo "$LIBDEFLATE_DEB_SHA256  libdeflate0_${LIBDEFLATE_DEB_VERSION}_amd64.deb" | sha256sum -c - \
+   && dpkg -x libdeflate0_${LIBDEFLATE_DEB_VERSION}_amd64.deb /build/deb/root \
+   && cp -L /build/deb/root/usr/lib/x86_64-linux-gnu/libdeflate.so.0 /opt/venv/lib/libdeflate.so.0 \
+   && echo "$LIBDEFLATE_DEB_VERSION" > /opt/venv/lib/libdeflate.version \
+   && rm -rf /build/deb /var/lib/apt/lists/*
+  find /opt/venv -depth -type d \( -name tests -o -name test -o -name __pycache__ -o -name include \) -exec rm -rf {} + \
+   && find /opt/venv -type f \( -name '*.pyc' -o -name '*.pyi' -o -name '*.pxd' -o -name '*.pyx' -o -name '*.a' \) -delete \
+   && rm -f /opt/venv/bin/f2py /opt/venv/bin/numpy-config \
+   && find /opt/venv -type f \( -name '*.so' -o -name '*.so.*' \) -exec strip --strip-unneeded {} + \
+   && python -m compileall -q --invalidation-mode unchecked-hash /opt/venv /opt/dmrdetector/src
+  export NUMBA_CPU_NAME="generic"
+  export DMRDETECTOR_REQUIRE_CACHE="{{ REQUIRE_CACHE }}"
+  bash /build/warm_cache.sh /opt/dmrdetector/numba-cache /build/smoke
+
+
+Bootstrap: docker
+From: python:3.12.15-slim-trixie@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+Stage: final
+
+%arguments
+  REQUIRE_CACHE=0
+
+%files
+  env/requirements.lock /opt/dmrdetector/requirements.lock
+  env/smoke_test.py /opt/dmrdetector/smoke_test.py
+
+%files from build
+  /opt/venv /opt/venv
+  /opt/dmrdetector/src /opt/dmrdetector/src
+  /opt/dmrdetector/numba-cache /opt/dmrdetector/numba-cache
+
+%post
+  rm -rf /usr/local/lib/python3.12/site-packages/* /usr/local/lib/python3.12/ensurepip \
+      /usr/local/lib/python3.12/idlelib /usr/local/lib/python3.12/tkinter /usr/local/lib/python3.12/turtledemo \
+      /usr/local/lib/python3.12/turtle.py /usr/local/lib/python3.12/lib2to3 /usr/local/include \
+      /usr/local/bin/pip* /usr/local/bin/idle* /usr/local/bin/pydoc* /usr/local/share/man \
+      /var/lib/apt/lists/* /var/cache/apt /usr/share/doc/* /usr/share/man/* /usr/share/info/*
+  python -m compileall -q --invalidation-mode unchecked-hash /usr/local/lib/python3.12
+  export PATH="/opt/venv/bin:$PATH"
+  export PYTHONDONTWRITEBYTECODE="1"
+  export PYTHONNOUSERSITE="1"
+  export PYTHONPATH=""
+  export OMP_NUM_THREADS="1"
+  export OPENBLAS_NUM_THREADS="1"
+  export MKL_NUM_THREADS="1"
+  export NUMBA_NUM_THREADS="1"
+  export NUMBA_CPU_NAME="generic"
+
+%environment
+  export PATH="/opt/venv/bin:$PATH"
+  export PYTHONDONTWRITEBYTECODE="1"
+  export PYTHONNOUSERSITE="1"
+  export PYTHONPATH=""
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+  export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+  export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+  export NUMBA_NUM_THREADS="${NUMBA_NUM_THREADS:-1}"
+  export NUMBA_CPU_NAME="${NUMBA_CPU_NAME:-generic}"
+  export GLIBC_TUNABLES="glibc.cpu.hwcaps=-FMA,-FMA4"
+
+%runscript
+  exec dmrdetector "$@"
+
+%labels
+  org.opencontainers.image.title DMRdetector
+  org.opencontainers.image.version 3.2.0
+  org.opencontainers.image.authors Jen-Hsiang Ou
+  org.opencontainers.image.licenses MIT
+
+%test
+  dmrdetector --version && DMRDETECTOR_REQUIRE_CACHE="{{ REQUIRE_CACHE }}" python /opt/dmrdetector/smoke_test.py

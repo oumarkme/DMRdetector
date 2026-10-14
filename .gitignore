@@ -1,31 +1,32 @@
 # Container images
 *.sif
-*.simg
+*.sif.sha256
+*.sif.tmp
 
-# Nextflow runtime
-.nextflow/
-.nextflow.log*
+# Python
+__pycache__/
+.pytest_cache/
+build/
+/dist/
+*.egg-info/
+
+# Runtime output and the files the README commands create in the repository root
 work/
+/dmrdetector/
+/demo/
+/reference/
+/gtf/
+*.log
 
-# Results
-results/
+# Local development material (validation data, benchmarks, notes); never published
+/dev/
 
-# OS
+# OS and editors
 .DS_Store
 Thumbs.db
-
-# IDE
 .vscode/
 .idea/
-
-# R
-.Rhistory
-.RData
-
-# Local testing
-test/
-
-# Temporary
 *.tmp
 *.swp
 *~
+/pytest_lib/
